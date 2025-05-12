@@ -780,28 +780,28 @@ class IndicatorAnalyzer:
     def visualize_weight_comparison(self, output_dir: str = None) -> str:
         """
         Create visualizations comparing old and new weight calculations
-        
+
         Args:
             output_dir: Directory to save visualizations (default: config output dir)
-            
+
         Returns:
             Path to the saved visualization file
         """
         if not output_dir:
             output_dir = self.config_manager.config.get('output', {}).get('save_path', 'output')
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Create comparison DataFrame
         comparison_data = []
-        
+
         # Debug logging
         logger.info("Creating visualization with the following indicators:")
         logger.info(f"Old weights: {self.old_weights}")
         logger.info(f"New weights: {self.new_weights}")
-        
+
         # Ensure we have all indicators
         all_indicators = set(self.old_weights.keys()) | set(self.new_weights.keys())
-        
+
         for indicator in all_indicators:
             comparison_data.append({
                 'Indicator': indicator,
@@ -810,73 +810,73 @@ class IndicatorAnalyzer:
                 'Correlation': self.indicator_correlations.get(indicator, 0),
                 'Type': self._get_indicator_type(indicator)
             })
-        
+
         df = pd.DataFrame(comparison_data)
-        
+
         # Sort by new weights for better visualization
         df = df.sort_values('New Weight', ascending=False)
-        
+
         # Create visualization
         plt.figure(figsize=(15, 10))
-        
+
         # Plot 1: Weight comparison
         plt.subplot(2, 2, 1)
         x = range(len(df))
         width = 0.35
-        
+
         # Create bar chart
         plt.bar([i - width/2 for i in x], df['Old Weight'], width, label='Old Weights', alpha=0.6)
         plt.bar([i + width/2 for i in x], df['New Weight'], width, label='New Weights', alpha=0.6)
-        
+
         # Customize x-axis
         plt.xticks([i for i in x], df['Indicator'], rotation=45, ha='right')
         plt.title('Weight Comparison: Old vs New')
         plt.legend()
-        
+
         # Add value labels on top of bars
         for i, v in enumerate(df['Old Weight']):
             plt.text(i - width/2, v, f'{v:.3f}', ha='center', va='bottom')
         for i, v in enumerate(df['New Weight']):
             plt.text(i + width/2, v, f'{v:.3f}', ha='center', va='bottom')
-        
+
         # Plot 2: Correlation vs Weights scatter
         plt.subplot(2, 2, 2)
         plt.scatter(df['Correlation'], df['Old Weight'], alpha=0.6, label='Old Weights')
         plt.scatter(df['Correlation'], df['New Weight'], alpha=0.6, label='New Weights')
-        
+
         # Add indicator labels to scatter plot
         for i, txt in enumerate(df['Indicator']):
-            plt.annotate(txt, (df['Correlation'].iloc[i], df['Old Weight'].iloc[i]), 
+            plt.annotate(txt, (df['Correlation'].iloc[i], df['Old Weight'].iloc[i]),
                         xytext=(5, 5), textcoords='offset points', fontsize=8)
-            plt.annotate(txt, (df['Correlation'].iloc[i], df['New Weight'].iloc[i]), 
+            plt.annotate(txt, (df['Correlation'].iloc[i], df['New Weight'].iloc[i]),
                         xytext=(5, -5), textcoords='offset points', fontsize=8)
-        
+
         plt.xlabel('Correlation')
         plt.ylabel('Weight')
         plt.title('Correlation vs Weights')
         plt.legend()
-        
+
         # Plot 3: Weight distribution
         plt.subplot(2, 2, 3)
         sns.kdeplot(data=df[['Old Weight', 'New Weight']], fill=True, alpha=0.5)
         plt.title('Weight Distribution')
-        
+
         # Plot 4: Type-based comparison
         plt.subplot(2, 2, 4)
-        df_melted = pd.melt(df, 
-                            id_vars=['Indicator', 'Type'], 
+        df_melted = pd.melt(df,
+                            id_vars=['Indicator', 'Type'],
                             value_vars=['Old Weight', 'New Weight'],
                             var_name='Method', value_name='Weight')
         sns.boxplot(data=df_melted, x='Type', y='Weight', hue='Method')
         plt.title('Weight Distribution by Indicator Type')
-        
+
         plt.tight_layout()
-        
+
         # Save the figure
         output_file = os.path.join(output_dir, 'weight_comparison.png')
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         plt.close()
-        
+
         # Also save the comparison data to Excel with more detail
         excel_file = os.path.join(output_dir, 'weight_comparison.xlsx')
         with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
@@ -884,25 +884,25 @@ class IndicatorAnalyzer:
             df_detailed = df.copy()
             df_detailed['Weight Change'] = df_detailed['New Weight'] - df_detailed['Old Weight']
             df_detailed['Change %'] = ((df_detailed['New Weight'] / df_detailed['Old Weight'] - 1) * 100).fillna(0)
-            
+
             df_detailed.to_excel(writer, sheet_name='Weight Comparison', index=False)
-            
+
             # Add formatting
             workbook = writer.book
             worksheet = writer.sheets['Weight Comparison']
-            
+
             # Add formats
             header_format = workbook.add_format({
                 'bold': True,
                 'bg_color': '#D9E1F2',
                 'border': 1
             })
-            
+
             # Apply formats
             for col_num, value in enumerate(df_detailed.columns.values):
                 worksheet.write(0, col_num, value, header_format)
                 worksheet.set_column(col_num, col_num, 15)
-            
+
             # Add transformation parameters
             param_data = pd.DataFrame([{
                 'Parameter': 'Transformation Method',
@@ -920,7 +920,136 @@ class IndicatorAnalyzer:
                 'Parameter': 'Significance Method',
                 'Value': self.weight_params['significance_method']
             }])
-            
+
             param_data.to_excel(writer, sheet_name='Parameters', index=False, startrow=1)
-        
-        return output_file 
+
+        return output_file
+
+    def add_indicator(self, indicator_name: str, indicator_data: pd.DataFrame, indicator_type: str = 'continuous', weight: Union[float, str] = 'auto') -> bool:
+        """
+        Add a new indicator to the system from the Streamlit interface
+
+        Args:
+            indicator_name: Name of the indicator
+            indicator_data: DataFrame containing the indicator data
+            indicator_type: Type of indicator ('continuous' or 'rank')
+            weight: Weight to assign to the indicator (numeric or 'auto')
+
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            logger.info(f"Adding indicator '{indicator_name}' with type '{indicator_type}'")
+
+            # Validate the data format
+            required_columns = ['idGeo', 'Year', 'Value']
+            for col in required_columns:
+                if col not in indicator_data.columns:
+                    logger.error(f"Missing required column '{col}' in indicator data")
+                    return False
+
+            # Add indicator to configuration
+            existing_indicators = self.config_manager.get_indicators()
+
+            # Check if indicator already exists
+            for indicator in existing_indicators:
+                if indicator.get('name') == indicator_name:
+                    logger.info(f"Indicator '{indicator_name}' already exists, updating")
+                    indicator['type'] = indicator_type
+                    indicator['weight'] = weight
+                    break
+            else:
+                # Add new indicator
+                new_indicator = {
+                    'name': indicator_name,
+                    'type': indicator_type,
+                    'weight': weight
+                }
+                existing_indicators.append(new_indicator)
+
+            # Update configuration
+            data_sources = self.config_manager.config.setdefault('data_sources', {})
+            data_sources['indicators'] = existing_indicators
+
+            # Save indicator data to file
+            self._save_indicator_data(indicator_name, indicator_data)
+
+            # Reset weights to trigger recalculation
+            self.indicator_weights = {}
+            self.indicator_correlations = {}
+
+            logger.info(f"Successfully added indicator '{indicator_name}'")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error adding indicator '{indicator_name}': {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def _save_indicator_data(self, indicator_name: str, indicator_data: pd.DataFrame) -> str:
+        """
+        Save indicator data to the appropriate file
+
+        Args:
+            indicator_name: Name of the indicator
+            indicator_data: DataFrame containing the indicator data
+
+        Returns:
+            Path to the saved file
+        """
+        # Get the data directory
+        data_dir = self.config_manager.config.get('data_sources', {}).get('path', 'data')
+        indicators_dir = os.path.join(data_dir, 'indicators')
+
+        # Create directory if it doesn't exist
+        os.makedirs(indicators_dir, exist_ok=True)
+
+        # Clean up the indicator name for the filename
+        safe_name = indicator_name.replace(' ', '_').lower()
+
+        # Save to CSV
+        output_file = os.path.join(indicators_dir, f"{safe_name}.csv")
+        indicator_data.to_csv(output_file, index=False)
+
+        logger.info(f"Saved indicator data to {output_file}")
+        return output_file
+
+    def set_indicator_weight(self, indicator_name: str, weight: float) -> bool:
+        """
+        Set the weight for a specific indicator
+
+        Args:
+            indicator_name: Name of the indicator
+            weight: Weight value to set (between 0 and 1)
+
+        Returns:
+            Boolean indicating success
+        """
+        try:
+            # Normalize weight to be between 0 and 1
+            weight = max(0, min(1, float(weight)))
+
+            # Update in-memory weights
+            self.indicator_weights[indicator_name] = weight
+
+            # Update configuration
+            existing_indicators = self.config_manager.get_indicators()
+            for indicator in existing_indicators:
+                if indicator.get('name') == indicator_name:
+                    indicator['weight'] = weight
+                    break
+            else:
+                logger.warning(f"Indicator '{indicator_name}' not found in configuration")
+                return False
+
+            # Update configuration
+            data_sources = self.config_manager.config.setdefault('data_sources', {})
+            data_sources['indicators'] = existing_indicators
+
+            logger.info(f"Set weight for indicator '{indicator_name}' to {weight}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error setting weight for indicator '{indicator_name}': {str(e)}")
+            return False 
