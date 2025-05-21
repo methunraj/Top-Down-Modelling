@@ -38,13 +38,14 @@ def validate_global_forecast(df: pd.DataFrame, config_manager: ConfigurationMana
         global_mapping = config_manager.get_column_mapping('global_forecast')
         year_col = global_mapping.get('year_column', 'Year')
         value_col = global_mapping.get('value_column', 'Value')
+        # Note: type_col is now optional
         type_col = global_mapping.get('type_column', 'Type')
     except Exception as e:
         return False, f"Error getting column mapping: {str(e)}"
     
     # Check that required columns exist
     missing_columns = []
-    for col, col_name in [(year_col, "Year"), (value_col, "Value"), (type_col, "Type")]:
+    for col, col_name in [(year_col, "Year"), (value_col, "Value")]:
         if col not in df.columns:
             missing_columns.append(f"{col_name} column '{col}'")
     
@@ -67,11 +68,13 @@ def validate_global_forecast(df: pd.DataFrame, config_manager: ConfigurationMana
     except Exception:
         return False, f"Value column does not contain valid numeric values"
     
-    # Check that type column contains expected values
-    expected_types = {'Historical', 'Forecast'}
-    actual_types = set(df[type_col].unique())
-    if not actual_types.issubset(expected_types) and not expected_types.issubset(actual_types):
-        return False, f"Type column should contain 'Historical' and 'Forecast' values"
+    # Type column is now optional
+    # If it exists, we'll check its values, but it's not required
+    if type_col in df.columns:
+        expected_types = {'Historical', 'Forecast'}
+        actual_types = set(df[type_col].unique())
+        if not actual_types.issubset(expected_types) and not expected_types.issubset(actual_types):
+            return False, f"If present, Type column should contain 'Historical' and 'Forecast' values"
     
     return True, ""
 
@@ -363,13 +366,22 @@ def render_data_upload(config_manager: ConfigurationManager) -> Dict[str, Any]:
                     
                     # Data summary
                     years = sorted(df[year_col].unique())
-                    st.markdown(f"""
-                    **Data Summary:**
-                    - Years: {min(years)} to {max(years)}
-                    - Total years: {len(years)}
-                    - Historical years: {len(df[df[type_col] == 'Historical'])}
-                    - Forecast years: {len(df[df[type_col] == 'Forecast'])}
-                    """)
+                    
+                    # Check if type column exists
+                    if type_col in df.columns:
+                        st.markdown(f"""
+                        **Data Summary:**
+                        - Years: {min(years)} to {max(years)}
+                        - Total years: {len(years)}
+                        - Historical years: {len(df[df[type_col] == 'Historical'])}
+                        - Forecast years: {len(df[df[type_col] == 'Forecast'])}
+                        """)
+                    else:
+                        st.markdown(f"""
+                        **Data Summary:**
+                        - Years: {min(years)} to {max(years)}
+                        - Total years: {len(years)}
+                        """)
                     
                     # Simple line chart of global market
                     st.subheader("Global Market Trend")
@@ -391,17 +403,29 @@ def render_data_upload(config_manager: ConfigurationManager) -> Dict[str, Any]:
                     
                     year_col_map = st.selectbox("Year Column", options=df.columns.tolist(), index=0 if year_col not in df.columns else df.columns.tolist().index(year_col))
                     value_col_map = st.selectbox("Value Column", options=df.columns.tolist(), index=0 if value_col not in df.columns else df.columns.tolist().index(value_col))
-                    type_col_map = st.selectbox("Type Column", options=df.columns.tolist(), index=0 if type_col not in df.columns else df.columns.tolist().index(type_col))
+                    
+                    # Type column is now optional
+                    type_col_option = st.checkbox("Include Type Column (Historical/Forecast)", value=True if type_col in df.columns else False)
+                    
+                    if type_col_option:
+                        type_col_map = st.selectbox("Type Column", options=df.columns.tolist(), index=0 if type_col not in df.columns else df.columns.tolist().index(type_col))
+                    else:
+                        type_col_map = None
                     
                     # Option to update mapping and save
                     if st.button("Update Mapping and Save"):
                         # Create a new DataFrame with the correct column names
                         mapped_df = df.copy()
-                        mapped_df = mapped_df.rename(columns={
+                        rename_cols = {
                             year_col_map: year_col,
-                            value_col_map: value_col,
-                            type_col_map: type_col
-                        })
+                            value_col_map: value_col
+                        }
+                        
+                        # Add type column mapping if it was selected
+                        if type_col_option and type_col_map:
+                            rename_cols[type_col_map] = type_col
+                            
+                        mapped_df = mapped_df.rename(columns=rename_cols)
                         
                         # Validate again
                         is_valid, error_message = validate_global_forecast(mapped_df, config_manager)

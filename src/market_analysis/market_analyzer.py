@@ -56,6 +56,34 @@ class MarketAnalyzer:
         
         # Initialize results storage
         self.distributed_market = None
+        
+        # Store selected forecasting model
+        self.forecasting_model = None
+    
+    def set_forecasting_model(self, model_name: str) -> None:
+        """
+        Set the forecasting model to use for market analysis
+        
+        Args:
+            model_name: Name of the forecasting model to use
+        """
+        # Validate model name
+        from src.global_forecasting import FORECASTER_NAMES
+        
+        if model_name in FORECASTER_NAMES:
+            self.forecasting_model = model_name
+            logger.info(f"Set forecasting model to: {model_name}")
+            
+            # Update market distributor configuration
+            if hasattr(self.market_distributor, 'distribution_settings'):
+                if 'forecasting' not in self.market_distributor.distribution_settings:
+                    self.market_distributor.distribution_settings['forecasting'] = {}
+                
+                self.market_distributor.distribution_settings['forecasting']['method'] = model_name
+        else:
+            valid_models = list(FORECASTER_NAMES.keys())
+            logger.warning(f"Unknown forecasting model: {model_name}")
+            logger.warning(f"Valid models: {', '.join(valid_models)}")
     
     def analyze_market(self) -> pd.DataFrame:
         """
@@ -71,6 +99,16 @@ class MarketAnalyzer:
             logger.info("Loading market data")
             global_forecast = self.data_loader.load_global_forecast()
             country_historical = self.data_loader.load_country_historical()
+            
+            # Apply forecasting model if specified
+            if self.forecasting_model:
+                logger.info(f"Using forecasting model: {self.forecasting_model}")
+                # Update market distributor configuration
+                if hasattr(self.market_distributor, 'distribution_settings'):
+                    if 'forecasting' not in self.market_distributor.distribution_settings:
+                        self.market_distributor.distribution_settings['forecasting'] = {}
+                    
+                    self.market_distributor.distribution_settings['forecasting']['method'] = self.forecasting_model
             
             # Analyze indicators
             logger.info("Analyzing market indicators")

@@ -273,7 +273,11 @@ def render_data_input_page():
                 # Let user select the appropriate columns
                 year_col = st.selectbox("Year Column", options=df.columns.tolist(), key="global_year")
                 value_col = st.selectbox("Value Column", options=df.columns.tolist(), key="global_value")
-                type_col = st.selectbox("Type Column (Historical/Forecast)", options=df.columns.tolist(), key="global_type")
+                
+                # Type column is optional
+                include_type = st.checkbox("Include Type Column (Historical/Forecast)", value=False)
+                if include_type:
+                    type_col = st.selectbox("Type Column", options=df.columns.tolist(), key="global_type")
                 
                 # Save button
                 if st.button("Save Global Market Data"):
@@ -1311,7 +1315,7 @@ def render_current_page():
         forecast_config = render_global_forecast_interface()
 
         # Store forecast data in session state if returned
-        if 'result' in forecast_config and forecast_config['result'] is not None:
+        if forecast_config is not None and 'result' in forecast_config and forecast_config['result'] is not None:
             st.session_state.global_forecast = forecast_config['result']
     elif st.session_state.active_page == "Market Distribution":
         distribution_config = render_distribution_interface(config_manager)
