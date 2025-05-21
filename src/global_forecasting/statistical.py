@@ -11,6 +11,7 @@ from typing import Dict, List, Any, Optional, Union, Tuple
 import logging
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+from statsmodels.tsa.arima.model import ARIMA
 
 from src.global_forecasting.base_forecaster import BaseForecaster
 
@@ -857,6 +858,384 @@ class ExponentialSmoothingForecaster(BaseForecaster):
             forecasts.append(forecast)
         
         return np.array(forecasts)
+
+
+class ARIMAForecaster(BaseForecaster):
+    """
+    ARIMA (AutoRegressive Integrated Moving Average) forecasting method.
+
+    This method uses the ARIMA model to capture complex time series dynamics,
+    including trends, seasonality, and autoregressive patterns.
+    """
+
+    def _initialize_parameters(self) -> None:
+        """Initialize ARIMA-specific parameters from configuration"""
+        # ARIMA order (p, d, q)
+        self.order = self.config.get('order', (1, 1, 1))
+        
+        # Seasonal order (P, D, Q, s)
+        self.seasonal_order = self.config.get('seasonal_order', (0, 0, 0, 0))
+        
+        # Whether to ensure a minimum value in forecasts
+        self.ensure_minimum = self.config.get('ensure_minimum', True)
+        
+        # Minimum value allowed in forecast
+        self.minimum_value = self.config.get('minimum_value', 0)
+        
+        # Store historical data
+        self.history = None
+        self._last_date = None
+        self._data_freq = None  # Inferred frequency of historical data
+
+    def fit(self, data: pd.DataFrame) -> 'ARIMAForecaster':
+        """
+        Fit the ARIMA model to historical data.
+
+        Args:
+            data: DataFrame with 'date' and 'value' columns
+
+        Returns:
+            Self for method chaining
+        """
+        # Validate input data
+        if 'date' not in data.columns or 'value' not in data.columns:
+            raise ValueError("Data must contain 'date' and 'value' columns")
+
+        if data['date'].dtype == 'object':
+            data = data.copy()
+            data['date'] = pd.to_datetime(data['date'])
+
+        data = data.sort_values('date').set_index('date')
+        self.history = data['value']
+        self._last_date = data.index[-1]
+
+        # Infer frequency if possible
+        if len(data.index) > 1:
+            self._data_freq = pd.infer_freq(data.index)
+            if self._data_freq is None:
+                logger.warning("Could not infer frequency from data index. Forecasting dates might be incorrect.")
+        else:
+            self._data_freq = None # Cannot infer with single point
+
+        # Fit ARIMA model
+        # Note: statsmodels ARIMA automatically handles differencing (d)
+        try:
+            self.model = ARIMA(
+                self.history,
+                order=self.order,
+                seasonal_order=self.seasonal_order,
+                enforce_stationarity=False, # Common practice
+                enforce_invertibility=False # Common practice
+            ).fit()
+        except Exception as e:
+            logger.error(f"Error fitting ARIMA model: {e}")
+            # Fallback for non-stationary data if auto-differencing isn't enough
+            # Or if seasonal_order is causing issues with non-seasonal data
+            if 'stationary' in str(e).lower() or 'invertibility' in str(e).lower():
+                 logger.info("Attempting fallback with simpler ARIMA order (1,1,0)")
+                 try:
+                     self.model = ARIMA(self.history, order=(1,1,0)).fit()
+                 except Exception as e_fallback:
+                     logger.error(f"Fallback ARIMA fitting also failed: {e_fallback}")
+                     raise e_fallback # Re-raise original error if fallback fails
+            elif self.seasonal_order != (0,0,0,0) and 'seasonal' in str(e).lower():
+                logger.info("Attempting fallback without seasonal component")
+                try:
+                    self.model = ARIMA(self.history, order=self.order, seasonal_order=(0,0,0,0)).fit()
+                except Exception as e_fallback_seasonal:
+                    logger.error(f"Fallback ARIMA (no seasonal) fitting also failed: {e_fallback_seasonal}")
+                    raise e_fallback_seasonal
+            else:
+                raise e
+
+
+        logger.info(f"ARIMA model fitted with order={self.order} and seasonal_order={self.seasonal_order}")
+        self.fitted = True
+        return self
+
+    def forecast(self, periods: int, frequency: str = 'Y') -> pd.DataFrame:
+        """
+        Generate forecast for the specified number of periods.
+
+        Args:
+            periods: Number of periods to forecast
+            frequency: Time frequency of forecast (Y=yearly, Q=quarterly, M=monthly)
+
+        Returns:
+            DataFrame with columns 'date' and 'value'
+        """
+        if not self.fitted:
+            raise ValueError("Model must be fitted before forecasting")
+
+        # Generate forecast dates
+        # Use inferred frequency if available and matches requested frequency prefix
+        # Otherwise, use the provided frequency string directly
+        
+        base_freq_char = frequency[0].upper() # Y, Q, M
+        
+        if self._data_freq:
+            # Attempt to map inferred frequency to pandas offset alias
+            # This handles cases like 'YS' (Year Start), 'AS' (Annual Start), etc.
+            # and aligns them with 'Y' for relativedelta.
+            # 'MS' for Month Start, 'QS' for Quarter Start
+            
+            # Try to make a more robust mapping for frequency
+            if self._data_freq.startswith('A') or self._data_freq.startswith('Y'):
+                inferred_base_freq = 'Y'
+            elif self._data_freq.startswith('Q'):
+                inferred_base_freq = 'Q'
+            elif self._data_freq.startswith('M'):
+                inferred_base_freq = 'M'
+            else: # Daily, weekly, hourly etc. - may not align well with Y/Q/M forecast
+                inferred_base_freq = None
+                logger.warning(f"Inferred data frequency '{self._data_freq}' may not align well with requested forecast frequency '{frequency}'.")
+
+            if inferred_base_freq and inferred_base_freq == base_freq_char:
+                 # Use a DatetimeIndex for date generation if frequencies match
+                forecast_dates_index = pd.date_range(
+                    start=self._last_date,
+                    periods=periods + 1,  # +1 to include start, then drop it
+                    freq=self._data_freq  # Use the inferred frequency
+                )[1:]
+                forecast_dates = list(forecast_dates_index.to_pydatetime())
+            else:
+                # Fallback to relativedelta if frequencies don't match well
+                forecast_dates = []
+                current_date = self._last_date
+                for _ in range(periods):
+                    if frequency == 'Y':
+                        current_date += relativedelta(years=1)
+                    elif frequency == 'Q':
+                        current_date += relativedelta(months=3)
+                    elif frequency == 'M':
+                        current_date += relativedelta(months=1)
+                    else:
+                        raise ValueError(f"Unsupported frequency: {frequency}")
+                    forecast_dates.append(current_date)
+        else: # No inferred frequency, rely on relativedelta
+            forecast_dates = []
+            current_date = self._last_date
+            for _ in range(periods):
+                if frequency == 'Y':
+                    current_date += relativedelta(years=1)
+                elif frequency == 'Q':
+                    current_date += relativedelta(months=3)
+                elif frequency == 'M':
+                    current_date += relativedelta(months=1)
+                else:
+                    raise ValueError(f"Unsupported frequency: {frequency}")
+                forecast_dates.append(current_date)
+
+
+        # Get forecast and confidence intervals from ARIMA model
+        forecast_obj = self.model.get_forecast(steps=periods)
+        forecast_values = forecast_obj.predicted_mean.values
+        conf_int = forecast_obj.conf_int()
+
+        # Apply minimum value if configured
+        if self.ensure_minimum:
+            forecast_values = np.maximum(forecast_values, self.minimum_value)
+            conf_int_lower = np.maximum(conf_int.iloc[:, 0].values, self.minimum_value)
+            conf_int_upper = np.maximum(conf_int.iloc[:, 1].values, self.minimum_value)
+        else:
+            conf_int_lower = conf_int.iloc[:, 0].values
+            conf_int_upper = conf_int.iloc[:, 1].values
+
+
+        # Create forecast DataFrame
+        self.forecast_result = pd.DataFrame({
+            'date': forecast_dates,
+            'value': forecast_values
+        })
+
+        # Create confidence intervals DataFrame
+        self.confidence_intervals = pd.DataFrame({
+            'date': forecast_dates,
+            'lower': conf_int_lower,
+            'value': forecast_values, # Include the mean forecast for easier plotting
+            'upper': conf_int_upper
+        })
+        
+        self.forecast_dates = forecast_dates
+        
+        return self.forecast_result
+
+    def _predict_for_dates(self, dates: np.ndarray) -> np.ndarray:
+        """
+        Generate predictions for specific dates.
+        This requires re-fitting or extending the model up to the latest date in `dates`.
+        For simplicity, this basic implementation will only predict future dates
+        relative to the end of the training data.
+        A more robust version would handle dates within the training period (by returning
+        fitted values) or dates far past the forecast horizon (by re-forecasting).
+
+        Args:
+            dates: Array of dates to predict for. Must be after self._last_date.
+
+        Returns:
+            Array of predictions.
+        """
+        if not self.fitted:
+            raise ValueError("Model must be fitted before predicting")
+
+        if dates.size == 0:
+            return np.array([])
+
+        # Ensure dates are pd.Timestamp for comparison
+        dates = pd.to_datetime(dates)
+        
+        if np.any(dates <= self._last_date):
+            # This is a simplification. A full implementation might return:
+            # 1. Fitted values for dates within self.history.index
+            # 2. Forecasted values for dates beyond self._last_date
+            # This would require careful indexing and merging.
+            # For now, we raise an error or warn if dates are not in the future.
+            logger.warning("Prediction for past or current dates requested. "
+                           "This basic _predict_for_dates returns forecasts "
+                           "only for future dates relative to training data.")
+            # Filter to only future dates for this simplified example
+            future_dates_mask = dates > self._last_date
+            if not np.any(future_dates_mask):
+                 return np.array([]) # No future dates to predict
+            dates = dates[future_dates_mask]
+            if len(dates) == 0: # Re-check after filtering
+                return np.array([])
+
+
+        # Determine the number of steps needed from the last historical date
+        # This requires knowing the frequency of the data.
+        # This is a simplified example assuming the dates align with a predictable frequency.
+        
+        # Calculate steps for each date based on the most common frequency
+        # This is tricky if `dates` are not regularly spaced or don't align with `self._data_freq`
+        # For this example, let's assume they are future dates and we want to forecast up to the max date
+        
+        max_pred_date = max(dates)
+        
+        # Estimate number of periods to forecast to cover all requested dates
+        # This part is tricky if the frequency of `dates` is different from `self._data_freq`
+        # or if `self._data_freq` is None.
+        
+        # Simplification: forecast up to the furthest date and then select
+        # This isn't the most efficient for sparse/irregular `dates`
+        
+        if self._data_freq:
+            # Use date_range to count periods if frequency is known
+            try:
+                # Create a range from end of history to the max prediction date
+                future_range = pd.date_range(start=self._last_date, end=max_pred_date, freq=self._data_freq)
+                steps_needed = len(future_range) -1 # -1 because range includes the start_date
+                if steps_needed <= 0: # All dates are before or at _last_date
+                    return np.array([self.history.iloc[-1]] * len(dates)) # Or some other logic for past dates
+            except ValueError as e: # If freq doesn't work with date_range end
+                logger.warning(f"Could not determine steps with self._data_freq {self._data_freq} for prediction: {e}. Using approximation.")
+                # Fallback: approximate steps assuming a 'standard' year/month/quarter length
+                # This is a rough approximation
+                time_delta_days = (max_pred_date - self._last_date).days
+                if self._data_freq and self._data_freq[0] in ['A', 'Y']:
+                    steps_needed = time_delta_days // 365 + 1
+                elif self._data_freq and self._data_freq[0] == 'Q':
+                    steps_needed = time_delta_days // 90 + 1
+                elif self._data_freq and self._data_freq[0] == 'M':
+                    steps_needed = time_delta_days // 30 + 1
+                else: # daily or unknown
+                    steps_needed = time_delta_days +1
+        else: # No data frequency, rough approximation
+            time_delta_days = (max_pred_date - self._last_date).days
+            # Assuming daily steps if frequency is unknown, this might be very wrong
+            # A better approach might be to require frequency for _predict_for_dates
+            steps_needed = time_delta_days + 1 
+            logger.warning("Data frequency is unknown, _predict_for_dates might be inaccurate.")
+
+        if steps_needed <= 0: # If max_pred_date is not in the future
+            # Handle cases where all requested dates are in the past or are the last known date
+            # This part needs more robust logic based on how historical lookups should behave.
+            # For now, returning last known value for any date <= self._last_date if it's among `dates`
+            # This is not ideal. A proper solution would involve looking up fitted values from self.model.fittedvalues
+            # or historical values from self.history.
+            
+            # Temporary placeholder:
+            # For dates that are not in the future, we'd ideally return historical or fitted values.
+            # This method is primarily for future unseen dates.
+            # If all dates are in the past or present, this will result in an empty forecast or error from get_forecast.
+            # Let's return the last known value for any date that is not strictly in the future.
+            # This is a placeholder for a more robust handling of historical/fitted values.
+            
+            predictions = []
+            for date_val in dates:
+                if date_val <= self._last_date:
+                    # Attempt to find exact match in history
+                    if date_val in self.history.index:
+                         predictions.append(self.history.loc[date_val])
+                    else: # If no exact match, use the last known value (simplification)
+                         predictions.append(self.history.iloc[-1])
+                else: 
+                    # This case should not be hit if steps_needed <=0 means all dates are past/present
+                    # However, to be safe, predict using 1 step if a future date somehow gets here
+                    future_pred = self.model.get_forecast(steps=1).predicted_mean.iloc[0]
+                    predictions.append(future_pred)
+            return np.array(predictions)
+
+
+        all_forecasts = self.model.get_forecast(steps=steps_needed)
+        all_predicted_means = all_forecasts.predicted_mean
+        
+        # Now, match the forecasted values to the requested `dates`
+        # This requires aligning `dates` with the index of `all_predicted_means`
+        
+        # Create a temporary series from predictions with their dates
+        # The index of all_predicted_means starts right after self._last_date with self._data_freq
+        
+        if not self._data_freq:
+            logger.warning("Cannot accurately map predictions to specific dates without a known data frequency for history.")
+            # Fallback: return the sequence of predictions, assuming `dates` align with this sequence. Risky.
+            if len(all_predicted_means) < len(dates): # Should not happen if steps_needed was calculated correctly
+                 return np.array([self.minimum_value] * len(dates)) # Or some other error indicator
+            return all_predicted_means.iloc[:len(dates)].values
+
+
+        pred_index = pd.date_range(start=self._last_date + pd.Timedelta(days=1) if self._data_freq is None or not self._data_freq.startswith('D') else self._last_date + pd.tseries.frequencies.to_offset(self._data_freq), 
+                                   periods=steps_needed, freq=self._data_freq)
+
+        # Create a series with the generated forecast index
+        forecast_series = pd.Series(all_predicted_means.values, index=pred_index)
+        
+        # Reindex to match the exact dates requested, filling missing ones
+        # Use 'nearest' or 'ffill'/'bfill' if exact matches are not guaranteed
+        # For ARIMA, forecasts are for specific steps into the future, so direct mapping is usually what's needed
+        # if the `dates` align with the frequency.
+        
+        # Filter the series to only include requested dates
+        # This ensures that if `dates` are sparse, we only return values for them.
+        # We need to handle cases where a date in `dates` might not perfectly align with `pred_index`.
+        
+        # Use reindex with tolerance if dates might be slightly off, or ensure `dates` are aligned.
+        # For simplicity here, assume `dates` will align if they are sensible future dates.
+        try:
+            # Attempt to directly look up, assuming dates align with the forecast frequency
+            # This might fail if dates are arbitrary and don't match the frequency.
+            predictions = forecast_series.reindex(dates, method=None) # Exact match or NaN
+            
+            # Handle NaNs if any date didn't match (e.g. if a date is off-frequency)
+            # A more robust solution might interpolate or use method='nearest'
+            if predictions.isna().any():
+                logger.warning(f"Some requested prediction dates did not align with the model's forecast frequency ({self._data_freq}). Using nearest available forecast.")
+                # Fallback to nearest if exact match fails
+                predictions = forecast_series.reindex(dates, method='nearest', limit=1) # limit=1 to prevent far matches
+                # Ensure the nearest is within a reasonable tolerance, e.g., 1 period
+                # This part can get complex; for now, nearest is a simplification.
+
+
+        except KeyError: # Should not happen with reindex, but as a safeguard
+            logger.error(f"Could not map all prediction dates. Ensure they are compatible with data frequency {self._data_freq}")
+            # Fallback to returning a sequence of minimum values or raise error
+            return np.full(len(dates), self.minimum_value) 
+
+        final_predictions = predictions.values
+        if self.ensure_minimum:
+            final_predictions = np.maximum(final_predictions, self.minimum_value)
+            
+        return final_predictions
     
     def _forecast_triple(self, periods: int) -> np.ndarray:
         """

@@ -12,7 +12,8 @@ from src.global_forecasting.base_forecaster import BaseForecaster
 from src.global_forecasting.statistical import (
     CAGRForecaster,
     MovingAverageForecaster,
-    ExponentialSmoothingForecaster
+    ExponentialSmoothingForecaster,
+    ARIMAForecaster
 )
 
 # Technology-specific forecasting methods
@@ -28,12 +29,16 @@ from src.global_forecasting.ensemble import (
     WeightedEnsembleForecaster
 )
 
+# Import Prophet forecaster
+from src.global_forecasting.prophet_forecaster import ProphetForecaster
+
 # Dictionary of available forecasters for easy access
 AVAILABLE_FORECASTERS = {
     # Statistical methods
     'cagr': CAGRForecaster,
     'moving_average': MovingAverageForecaster,
     'exponential_smoothing': ExponentialSmoothingForecaster,
+    'arima': ARIMAForecaster,
     
     # Technology-specific methods
     'bass_diffusion': BassDiffusionForecaster,
@@ -43,6 +48,7 @@ AVAILABLE_FORECASTERS = {
     # Ensemble methods
     'simple_average_ensemble': SimpleAverageEnsemble,
     'weighted_ensemble': WeightedEnsembleForecaster,
+    'prophet': ProphetForecaster,
 }
 
 # Dictionary mapping friendly names to forecaster classes
@@ -51,6 +57,7 @@ FORECASTER_NAMES = {
     'CAGR': CAGRForecaster,
     'Moving Average': MovingAverageForecaster,
     'Exponential Smoothing': ExponentialSmoothingForecaster,
+    'ARIMA': ARIMAForecaster,
     
     # Technology-specific methods
     'Bass Diffusion': BassDiffusionForecaster,
@@ -60,6 +67,7 @@ FORECASTER_NAMES = {
     # Ensemble methods
     'Simple Average Ensemble': SimpleAverageEnsemble,
     'Weighted Ensemble': WeightedEnsembleForecaster,
+    'Prophet': ProphetForecaster,
 }
 
 # Categories of forecasters
@@ -68,6 +76,8 @@ FORECASTER_CATEGORIES = {
         'CAGR',
         'Moving Average',
         'Exponential Smoothing',
+        'ARIMA',
+        'Prophet',
     ],
     'Technology-Specific Methods': [
         'Bass Diffusion',

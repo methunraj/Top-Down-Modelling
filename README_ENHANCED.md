@@ -15,7 +15,7 @@ The enhanced version adds:
 ## Key Features
 
 - **Global Market Forecasting**:
-  - Statistical methods (CAGR, Moving Average, Exponential Smoothing)
+  - Statistical methods (CAGR, Moving Average, Exponential Smoothing, ARIMA, Prophet)
   - Technology-specific models (Bass Diffusion, Gompertz, S-Curve)
   - Ensemble forecasting techniques
 
