@@ -1,173 +1,143 @@
-################################################################################
-# Universal Market Forecasting Framework - Default Configuration
-################################################################################
-
-# Project information
 project:
-  name: "Technology Market Forecaster"
-  version: "1.0"
-  market_type: "Technology Market"
-  description: "Top-down market forecast and distribution for technology markets"
-
-################################################################################
-# DATA SOURCES
-################################################################################
+  name: Technology Market Forecaster
+  version: '1.0'
+  market_type: Technology Market
+  description: Top-down market forecast and distribution for technology markets
 data_sources:
-  # Global market forecast data
   global_forecast:
-    path: "data/global_forecast.xlsx"
-    sheet_name: "Sheet1"
+    path: data/global_forecast.xlsx
+    sheet_name: Sheet1
     identifier:
-      value_column: "Value"
-      year_column: "Year"
-      type_column: "Type"
-
-  # Country historical data
+      value_column: Value
+      year_column: Year
+      type_column: Type
   country_historical:
-    path: "data/country_data.xlsx"
-    sheet_name: "Sheet1"
-    format: "long"
+    path: data/country_data.xlsx
+    sheet_name: Sheet1
+    format: wide
     identifier:
-      id_column: "idGeo"
-      name_column: "Country"
-      market_column: "nameVertical"
-
-  # Indicators
+      id_column: idGeo
+      name_column: Country
+      market_column: nameVertical
   indicators:
-    # GDP indicator (value type)
-    - name: "GDP"
-      path: "data/indicators/gdp.xlsx"
-      sheet_name: "Sheet1"
-      id_column: "idGeo"
-      country_column: "Country"
-      format: "wide"
-      weight: "auto"
-      type: "value"
-      
-    # Technology adoption indicator (rank type)
-    - name: "TechnologyAdoption"
-      path: "data/indicators/tech_adoption.xlsx"
-      sheet_name: "Sheet1"
-      id_column: "idGeo"
-      country_column: "Country"
-      format: "wide"
-      weight: "auto"
-      type: "rank"
-
-################################################################################
-# COLUMN MAPPINGS
-################################################################################
+  - name: GDP
+    path: data/indicators/gdp.xlsx
+    sheet_name: Sheet1
+    id_column: idGeo
+    country_column: Country
+    format: wide
+    weight: auto
+    type: value
+  - name: TechnologyAdoption
+    path: data/indicators/tech_adoption.xlsx
+    sheet_name: Sheet1
+    id_column: idGeo
+    country_column: Country
+    format: wide
+    weight: auto
+    type: rank
 column_mapping:
   global_forecast:
-    year_column: "Year"
-    value_column: "Value"
-    type_column: "Type"
-  
+    year_column: Year
+    value_column: Value
+    type_column: Type
   country_historical:
-    id_column: "idGeo"
-    country_column: "Country"
-    vertical_column: "nameVertical"
-  
+    id_column: idGeo
+    country_column: Country
+    vertical_column: nameVertical
   indicators:
-    id_column: "idGeo"
-    country_column: "Country"
-
-################################################################################
-# MARKET DISTRIBUTION SETTINGS
-################################################################################
+    id_column: idGeo
+    country_column: Country
 market_distribution:
-  tier_determination: "auto"
-  
-  # K-means clustering parameters
+  tier_determination: auto
   kmeans_params:
     min_clusters: 3
     max_clusters: 8
     random_state: 42
     n_init: 10
-  
-  # Growth constraints
   growth_constraints:
-    determination_method: "auto"
-    
-    # Manual constraints (used if determination_method is "manual")
+    determination_method: auto
     manual_constraints:
       max_growth_rate: 60
       min_growth_rate: -30
       apply_scaling_by_market_size: true
-  
-  # Smoothing parameters
   smoothing:
     enabled: true
-    
-    # Tier-specific smoothing
     tier_smoothing:
       tier_1:
         window: 3
         min_periods: 1
-        max_growth: 35
-        min_growth: -15
-        target_growth: 15
-      
+        max_growth: 35.0
+        min_growth: -15.0
+        target_growth: 15.0
       tier_2:
         window: 3
         min_periods: 1
-        max_growth: 40
-        min_growth: -20
-        target_growth: 20
-      
+        max_growth: 40.0
+        min_growth: -20.0
+        target_growth: 20.0
       tier_3:
         window: 5
         min_periods: 1
-        max_growth: 45
-        min_growth: -25
-        target_growth: 25
-    
+        max_growth: 45.0
+        min_growth: -25.0
+        target_growth: 25.0
     convergence_rate: 0.25
-
-################################################################################
-# WEIGHT CALCULATION PARAMETERS
-################################################################################
+  calibration:
+    enabled: true
+    recalibration_strategy: gradual
+    learning_rate: 0.15
+    memory_length: 5
+    component_weights:
+      tier_classification: 0.2
+      causal_integration: 0.2
+      gradient_harmonization: 0.15
+      distribution_method: 0.3
+      regional_aggregation: 0.15
+    auto_adjust_weights: true
+    apply_country_specific_adjustments: true
+    confidence_thresholds:
+      high: 0.85
+      medium: 0.7
+      low: 0.5
+    evaluation_periods:
+    - 1
+    - 3
+    - 5
+    save_calibration_history: true
+    backup_frequency: 5
+    manual_country_adjustments: {}
 weight_params:
-  transformation: "log"
+  transformation: log
   log_base: 2.0
   log_scale: 1.0
   sigmoid_steepness: 5.0
-  significance_method: "continuous"
-  visualize_weights: true
-  
-  # Filtering settings
+  significance_method: continuous
+  visualize_weights: false
   filtering:
     min_correlation: 0.1
     max_p_value: 0.1
     min_coverage: 0.3
-
-################################################################################
-# OUTPUT SETTINGS
-################################################################################
 output:
-  save_path: "data/output/"
-  formats: ["xlsx", "csv", "json"]
-  
+  save_path: data/output/
+  formats:
+  - xlsx
+  - csv
+  - json
   visualizations:
     enabled: true
-    save_format: "png"
+    save_format: png
     dpi: 300
-    
     types:
-      # Market Size Visualization
-      - name: market_size
-        title: "${market_type} Market Size by Country"
-        top_n_countries: 10
-      
-      # Growth Rate Analysis
-      - name: growth_rates
-        title: "${market_type} Growth Rate Analysis"
-        top_n_countries: 10
-        show_yoy: true
-        show_cagr: true
-      
-      # Market Share Analysis
-      - name: market_share
-        title: "${market_type} Market Share Analysis"
-        top_n_countries: 10
-        show_regional: true
+    - name: market_size
+      title: ${market_type} Market Size by Country
+      top_n_countries: 10
+    - name: growth_rates
+      title: ${market_type} Growth Rate Analysis
+      top_n_countries: 10
+      show_yoy: true
+      show_cagr: true
+    - name: market_share
+      title: ${market_type} Market Share Analysis
+      top_n_countries: 10
+      show_regional: true

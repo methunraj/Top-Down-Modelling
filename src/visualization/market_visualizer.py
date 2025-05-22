@@ -15,6 +15,7 @@ from typing import Dict, List, Any, Optional, Union, Tuple
 import logging
 from matplotlib.ticker import FuncFormatter
 import re
+import networkx as nx
 
 # Configure logger
 logging.basicConfig(level=logging.INFO, 
@@ -41,1068 +42,1262 @@ class MarketVisualizer:
         self.config_manager = config_manager
         self.data_loader = data_loader
         
-        # Get project and output settings
+        # Get project info
         self.project_info = self.config_manager.get_project_info()
-        self.output_settings = self.config_manager.get_output_settings()
-        
-        # Set up formatting
         self.market_type = self.project_info.get('market_type', 'Market')
-        self.save_path = self.output_settings.get('save_path', 'data/output/')
         
-        # Create output directory if it doesn't exist
-        os.makedirs(self.save_path, exist_ok=True)
+        # Set default style for visualizations
+        sns.set_style("whitegrid")
+        plt.rcParams['figure.figsize'] = (12, 8)
+        plt.rcParams['figure.dpi'] = 100
         
-        # Set default style for plots
-        plt.style.use('seaborn-v0_8-pastel')
-        sns.set_color_codes("pastel")
+        # Define a color palette
+        self.color_palette = sns.color_palette("viridis", 12)
         
-        # Configure plot sizes and styles
-        self.figure_size = (12, 8)
-        self.dpi = 100
-        self.title_fontsize = 16
-        self.axis_fontsize = 12
-        self.legend_fontsize = 10
+        # Set default output directory
+        self.output_dir = self.config_manager.get_output_directory()
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Track created visualization files
+        self.visualization_files = []
     
     def generate_all_visualizations(self, market_data: pd.DataFrame) -> List[str]:
         """
         Generate all configured visualizations
         
         Args:
-            market_data: DataFrame with distributed market values
+            market_data: DataFrame with market forecast data
             
         Returns:
-            List of file paths to generated visualizations
+            List of paths to generated visualization files
         """
-        # Get visualization types from configuration
-        visualization_settings = self.output_settings.get('visualizations', {})
-        visualization_types = visualization_settings.get('types', [])
+        # Reset visualization files list
+        self.visualization_files = []
         
-        if not visualization_types:
-            logger.warning("No visualization types configured")
-            return []
-        
-        generated_files = []
-        
-        # Generate each visualization type
-        for viz_config in visualization_types:
-            viz_name = viz_config.get('name', '')
-            
-            if not viz_name:
-                continue
-            
-            # Replace placeholders in title
-            title = viz_config.get('title', f'{self.market_type} Analysis')
-            title = self._replace_placeholders(title)
-            
-            try:
-                if viz_name == 'market_size':
-                    file_path = self.create_market_size_chart(
-                        market_data, 
-                        title=title,
-                        top_n=viz_config.get('top_n_countries', 10)
-                    )
-                    generated_files.append(file_path)
-                
-                elif viz_name == 'growth_rates':
-                    generated_files = self.create_growth_rate_chart(
-                        market_data, 
-                        title=title,
-                        top_n=viz_config.get('top_n_countries', 15)
-                    )
-                    generated_files.extend(generated_files)
-                
-                elif viz_name == 'cagr_analysis':
-                    periods = viz_config.get('periods', [])
-                    file_path = self.create_cagr_analysis(
-                        market_data, 
-                        title=title,
-                        periods=periods
-                    )
-                    generated_files.append(file_path)
-                
-                elif viz_name == 'market_share':
-                    file_path = self.create_market_share_chart(
-                        market_data, 
-                        title=title,
-                        top_n=viz_config.get('top_n_countries', 10)
-                    )
-                    generated_files.append(file_path)
-                
-                elif viz_name == 'forecast_comparison':
-                    file_path = self.create_forecast_comparison_chart(
-                        market_data, 
-                        title=title,
-                        years=viz_config.get('years', [])
-                    )
-                    generated_files.append(file_path)
-                
-                elif viz_name == 'regional_analysis':
-                    file_path = self.create_regional_analysis(
-                        market_data, 
-                        title=title,
-                        specific_year=viz_config.get('specific_year'),
-                        analysis_years=viz_config.get('analysis_years')
-                    )
-                    generated_files.append(file_path)
-                
-                elif viz_name == 'top_countries':
-                    file_path = self.create_top_countries_chart(
-                        market_data,
-                        title=title,
-                        top_n=viz_config.get('top_n_countries', 10),
-                        specific_countries=viz_config.get('specific_countries'),
-                        year=viz_config.get('year')
-                    )
-                    generated_files.append(file_path)
-                
-                else:
-                    logger.warning(f"Unknown visualization type: {viz_name}")
-            
-            except Exception as e:
-                logger.error(f"Error creating visualization '{viz_name}': {str(e)}")
-        
-        return generated_files
-    
-    def create_market_size_chart(self, market_data: pd.DataFrame, title: str = None, 
-                                top_n: int = 10) -> str:
-        """
-        Create a stacked area chart of market size by country
-        
-        Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            top_n: Number of top countries to show separately
-            
-        Returns:
-            Path to the saved visualization file
-        """
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        country_col = country_mapping.get('country_column', 'Country')
-        
-        # Use the final year for top countries selection
-        final_year = market_data['Year'].max()
-        final_year_data = market_data[market_data['Year'] == final_year].copy()
-        
-        # Get top N countries by value in final year
-        top_countries = final_year_data.sort_values(by='Value', ascending=False).head(top_n)[id_col].tolist()
-        
-        # Prepare data for visualization
-        pivot_data = []
-        
-        for year in sorted(market_data['Year'].unique()):
-            year_data = market_data[market_data['Year'] == year].copy()
-            
-            # Split into top countries and others
-            top_data = year_data[year_data[id_col].isin(top_countries)]
-            other_data = year_data[~year_data[id_col].isin(top_countries)]
-            
-            # Sum values for other countries
-            other_value = other_data['Value'].sum()
-            
-            # Add top countries data
-            for _, row in top_data.iterrows():
-                pivot_data.append({
-                    'Year': year,
-                    'Country': row[country_col],
-                    'Value': row['Value']
-                })
-            
-            # Add other countries
-            pivot_data.append({
-                'Year': year,
-                'Country': 'Other Countries',
-                'Value': other_value
-            })
-        
-        # Convert to DataFrame
-        pivot_df = pd.DataFrame(pivot_data)
-        
-        # Pivot for stacked chart
-        chart_data = pivot_df.pivot(index='Year', columns='Country', values='Value')
-        
-        # Create the plot
-        plt.figure(figsize=self.figure_size, dpi=self.dpi)
-        ax = chart_data.plot(kind='area', stacked=True, figsize=self.figure_size, alpha=0.7)
-        
-        # Format axes
-        plt.title(title or f'{self.market_type} Market Size by Country', fontsize=self.title_fontsize)
-        plt.xlabel('Year', fontsize=self.axis_fontsize)
-        plt.ylabel('Market Size', fontsize=self.axis_fontsize)
-        
-        # Format y-axis to show values in billions
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${x/1e9:.1f}B'))
-        
-        plt.grid(True, alpha=0.3)
-        plt.legend(fontsize=self.legend_fontsize, loc='upper left', bbox_to_anchor=(1, 1))
-        plt.tight_layout()
-        
-        # Save the figure
-        filename = os.path.join(self.save_path, f'{self.market_type}_Market_Size_by_Country.png')
-        plt.savefig(filename)
-        plt.close()
-        
-        logger.info(f"Created market size chart: {filename}")
-        
-        return filename
-    
-    def create_growth_rate_chart(self, market_data: pd.DataFrame, title: str = None,
-                                top_n: int = 15) -> List[str]:
-        """
-        Create separate charts for YoY and CAGR growth rates by country
-        
-        Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            top_n: Number of top countries to show
-            
-        Returns:
-            List of paths to the saved visualization files [cagr_file, yoy_file]
-        """
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        country_col = country_mapping.get('country_column', 'Country')
-        
-        # Calculate CAGR for the forecast period
-        years = sorted(market_data['Year'].unique())
-        forecast_start = min(years)  # First year (historical)
-        forecast_end = max(years)    # Last year (forecast)
-        
-        # Filter data for start and end years
-        start_data = market_data[market_data['Year'] == forecast_start].copy()
-        end_data = market_data[market_data['Year'] == forecast_end].copy()
-        
-        # Merge start and end data
-        merged = pd.merge(
-            end_data[[id_col, country_col, 'Value']],
-            start_data[[id_col, 'Value']],
-            on=id_col,
-            how='inner',
-            suffixes=('_end', '_start')
+        # Get visualization configurations
+        viz_configs = self.config_manager.get_value(
+            'output.visualizations.types', 
+            []
         )
         
-        # Calculate CAGR
-        years_diff = forecast_end - forecast_start
-        merged['CAGR'] = (merged['Value_end'] / merged['Value_start']) ** (1 / years_diff) - 1
+        if not viz_configs:
+            logger.warning("No visualization configurations found")
+            return []
         
-        # Get top countries by end value
-        top_countries = merged.sort_values(by='Value_end', ascending=False).head(top_n)
-        
-        generated_files = []
-        
-        # Create CAGR Chart
-        plt.figure(figsize=self.figure_size, dpi=self.dpi)
-        
-        # Sort countries by CAGR for better visualization
-        top_countries = top_countries.sort_values(by='CAGR', ascending=False)
-        colors = ['#ff9999' if x > 0 else '#99ccff' for x in top_countries['CAGR']]
-        
-        plt.bar(top_countries[country_col], top_countries['CAGR'] * 100, color=colors)
-        
-        # Format CAGR plot
-        plt.title(f'{self.market_type} CAGR Growth Rates ({forecast_start}-{forecast_end})', 
-                 fontsize=self.title_fontsize)
-        plt.xlabel('Country', fontsize=self.axis_fontsize)
-        plt.ylabel('CAGR (%)', fontsize=self.axis_fontsize)
-        plt.grid(axis='y', alpha=0.3)
-        plt.xticks(rotation=45, ha='right', fontsize=self.axis_fontsize - 2)
-        
-        # Add value labels on CAGR bars
-        for i, v in enumerate(top_countries['CAGR'] * 100):
-            plt.text(i, v + (1 if v >= 0 else -3), f'{v:.1f}%', 
-                     ha='center', fontsize=self.axis_fontsize - 4)
-        
-        plt.tight_layout()
-        
-        # Save CAGR chart
-        cagr_filename = os.path.join(self.save_path, f'{self.market_type}_CAGR_Growth_Rates_{forecast_start}-{forecast_end}.png')
-        plt.savefig(cagr_filename)
-        plt.close()
-        
-        logger.info(f"Created CAGR growth rate chart: {cagr_filename}")
-        generated_files.append(cagr_filename)
-        
-        # Calculate YoY growth rates for each country
-        yoy_data = []
-        for country_id in top_countries[id_col]:
-            country_data = market_data[market_data[id_col] == country_id].sort_values('Year')
-            if len(country_data) > 1:
-                country_data['YoY_Growth'] = country_data['Value'].pct_change() * 100
-                yoy_data.append(country_data)
-        
-        if yoy_data:
-            yoy_df = pd.concat(yoy_data)
+        # Generate each configured visualization
+        for viz_config in viz_configs:
+            viz_type = viz_config.get('name', '')
             
-            # Create YoY Growth Chart
-            plt.figure(figsize=self.figure_size, dpi=self.dpi)
-            
-            # Plot YoY growth rates for each country
-            for country in top_countries[country_col]:
-                country_data = yoy_df[yoy_df[country_col] == country]
-                plt.plot(country_data['Year'], country_data['YoY_Growth'], 
-                        marker='o', label=country, linewidth=2)
-            
-            # Format YoY plot
-            plt.title(f'{self.market_type} Year-over-Year Growth Rates', fontsize=self.title_fontsize)
-            plt.xlabel('Year', fontsize=self.axis_fontsize)
-            plt.ylabel('YoY Growth Rate (%)', fontsize=self.axis_fontsize)
-            plt.grid(True, alpha=0.3)
-            
-            # Add legend with better placement
-            plt.legend(fontsize=self.legend_fontsize, bbox_to_anchor=(1.05, 1), 
-                      loc='upper left', borderaxespad=0.)
-            
-            plt.tight_layout()
-            
-            # Save YoY chart
-            yoy_filename = os.path.join(self.save_path, f'{self.market_type}_YoY_Growth_Rates_{forecast_start}-{forecast_end}.png')
-            plt.savefig(yoy_filename, bbox_inches='tight')
-            plt.close()
-            
-            logger.info(f"Created YoY growth rate chart: {yoy_filename}")
-            generated_files.append(yoy_filename)
+            try:
+                if viz_type == 'market_size':
+                    self._create_market_size_visualization(market_data, viz_config)
+                elif viz_type == 'growth_rates':
+                    self._create_growth_rates_visualization(market_data, viz_config)
+                elif viz_type == 'cagr_analysis':
+                    self._create_cagr_analysis_visualization(market_data, viz_config)
+                elif viz_type == 'regional_analysis':
+                    self._create_regional_analysis_visualization(market_data, viz_config)
+                elif viz_type == 'causal_influence':
+                    self._create_causal_influence_visualization(market_data, viz_config)
+                else:
+                    logger.warning(f"Unknown visualization type: {viz_type}")
+            except Exception as e:
+                logger.error(f"Error generating {viz_type} visualization: {str(e)}")
         
-        return generated_files
+        return self.visualization_files
     
-    def create_cagr_analysis(self, market_data: pd.DataFrame, title: str = None,
-                            periods: List[Dict[str, Any]] = None) -> str:
+    def _create_market_size_visualization(self, market_data: pd.DataFrame, 
+                                         config: Dict[str, Any]) -> str:
         """
-        Create a CAGR analysis chart for different time periods
+        Create market size visualization
         
         Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            periods: List of period configurations
+            market_data: DataFrame with market forecast data
+            config: Visualization configuration
             
         Returns:
-            Path to the saved visualization file
+            Path to the generated visualization file
         """
-        # Default periods if not provided
+        logger.info("Generating market size visualization")
+        
+        # Get configuration
+        title = config.get('title', f"{self.market_type} Market Size by Country")
+        title = self._replace_variables(title)
+        top_n = config.get('top_n_countries', 10)
+        
+        # Get the latest year in the data
+        latest_year = market_data['Year'].max()
+        latest_data = market_data[market_data['Year'] == latest_year].copy()
+        
+        # Fixed: Get value column name and validate existence
+        value_column = self.config_manager.get_column_mapping('global_forecast').get('value_column', 'Value')
+        
+        # Validate that the value column exists
+        if value_column not in latest_data.columns:
+            logger.warning(f"Value column '{value_column}' not found in data, using 'Value' as fallback")
+            value_column = 'Value'
+            if value_column not in latest_data.columns:
+                logger.error("Neither configured value column nor 'Value' column found in data")
+                return None
+        
+        # Get top N countries by market value
+        top_countries = latest_data.sort_values(by=value_column, ascending=False).head(top_n)
+        
+        # Create the visualization
+        plt.figure(figsize=(12, 8))
+        
+        # Bar chart of market size - Fixed to use dynamic column name
+        ax = sns.barplot(
+            x='Country',
+            y=value_column,
+            data=top_countries,
+            palette=self.color_palette[:top_n]
+        )
+        
+        # Format y-axis as millions/billions
+        ax.yaxis.set_major_formatter(FuncFormatter(self._format_value_axis))
+        
+        # Add value labels on top of bars
+        for p in ax.patches:
+            ax.annotate(
+                f"{p.get_height()/1e6:.1f}M" if p.get_height() < 1e9 else f"{p.get_height()/1e9:.1f}B",
+                (p.get_x() + p.get_width() / 2., p.get_height()),
+                ha='center', va='bottom'
+            )
+        
+        # Customize plot
+        plt.title(f"{title} ({latest_year})", fontsize=16)
+        plt.xlabel('Country', fontsize=12)
+        plt.ylabel('Market Value', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_Market_Size_{latest_year}.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved market size visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        return output_file
+    
+    def _create_growth_rates_visualization(self, market_data: pd.DataFrame, 
+                                         config: Dict[str, Any]) -> str:
+        """
+        Create growth rates visualization
+        
+        Args:
+            market_data: DataFrame with market forecast data
+            config: Visualization configuration
+            
+        Returns:
+            Path to the generated visualization file
+        """
+        logger.info("Generating growth rates visualization")
+        
+        # Get configuration
+        title = config.get('title', f"{self.market_type} Growth Rates")
+        title = self._replace_variables(title)
+        top_n = config.get('top_n_countries', 15)
+        
+        # Calculate year-over-year growth rates
+        growth_data = []
+        
+        # Group by country
+        for country, group in market_data.groupby(['idGeo', 'Country']):
+            country_id, country_name = country
+            
+            # Sort by year
+            group = group.sort_values(by='Year')
+            
+            # Calculate growth rate
+            group['Growth_Rate'] = group['Value'].pct_change() * 100
+            
+            # Add to results (excluding first year which has no growth rate)
+            growth_data.append(group.iloc[1:])
+        
+        # Combine all data
+        growth_df = pd.concat(growth_data, ignore_index=True)
+        
+        # Get the latest year in the data
+        latest_year = growth_df['Year'].max()
+        latest_growth = growth_df[growth_df['Year'] == latest_year].copy()
+        
+        # Get top N countries by growth rate
+        top_growth = latest_growth.sort_values(by='Growth_Rate', ascending=False).head(top_n)
+        
+        # Create the visualization
+        plt.figure(figsize=(12, 8))
+        
+        # Bar chart of growth rates
+        ax = sns.barplot(
+            x='Country',
+            y='Growth_Rate',
+            data=top_growth,
+            palette=self.color_palette[:top_n]
+        )
+        
+        # Add value labels on top of bars
+        for p in ax.patches:
+            ax.annotate(
+                f"{p.get_height():.1f}%",
+                (p.get_x() + p.get_width() / 2., p.get_height()),
+                ha='center', va='bottom'
+            )
+        
+        # Customize plot
+        plt.title(f"{title} ({latest_year})", fontsize=16)
+        plt.xlabel('Country', fontsize=12)
+        plt.ylabel('Growth Rate (%)', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_Growth_Rates_{latest_year}.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved growth rates visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        
+        # Also create a growth trends visualization
+        self._create_growth_trends_visualization(growth_df, config)
+        
+        return output_file
+    
+    def _create_growth_trends_visualization(self, growth_df: pd.DataFrame,
+                                          config: Dict[str, Any]) -> str:
+        """
+        Create growth trends visualization
+        
+        Args:
+            growth_df: DataFrame with growth rate data
+            config: Visualization configuration
+            
+        Returns:
+            Path to the generated visualization file
+        """
+        # Get top countries by market value in the latest year
+        latest_year = growth_df['Year'].max()
+        latest_data = growth_df[growth_df['Year'] == latest_year].copy()
+        
+        top_n = min(8, len(latest_data))  # Limit to 8 countries for readability
+        top_countries = latest_data.sort_values(by='Value', ascending=False).head(top_n)
+        top_country_ids = top_countries['idGeo'].tolist()
+        
+        # Filter growth data to include only top countries
+        top_growth_data = growth_df[growth_df['idGeo'].isin(top_country_ids)]
+        
+        # Create the visualization
+        plt.figure(figsize=(14, 8))
+        
+        # Line chart of growth rates over time
+        sns.lineplot(
+            data=top_growth_data,
+            x='Year',
+            y='Growth_Rate',
+            hue='Country',
+            style='Country',
+            markers=True,
+            dashes=False,
+            palette=self.color_palette[:top_n]
+        )
+        
+        # Add horizontal line at 0%
+        plt.axhline(y=0, color='gray', linestyle='--', alpha=0.7)
+        
+        # Customize plot
+        title = config.get('title', f"{self.market_type} Growth Trends")
+        title = self._replace_variables(title)
+        plt.title(f"{title} (Top {top_n} Countries)", fontsize=16)
+        plt.xlabel('Year', fontsize=12)
+        plt.ylabel('Growth Rate (%)', fontsize=12)
+        plt.legend(title='Country', fontsize=10, loc='best')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_Growth_Trends.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved growth trends visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        return output_file
+    
+    def _create_cagr_analysis_visualization(self, market_data: pd.DataFrame,
+                                          config: Dict[str, Any]) -> str:
+        """
+        Create CAGR analysis visualization
+        
+        Args:
+            market_data: DataFrame with market forecast data
+            config: Visualization configuration
+            
+        Returns:
+            Path to the generated visualization file
+        """
+        logger.info("Generating CAGR analysis visualization")
+        
+        # Get configuration
+        title = config.get('title', f"{self.market_type} CAGR Analysis")
+        title = self._replace_variables(title)
+        periods = config.get('periods', [])
+        
         if not periods:
+            # Default periods
             periods = [
                 {'name': 'Short-term', 'years': 3},
                 {'name': 'Mid-term', 'years': 5},
                 {'name': 'Long-term', 'years': 7}
             ]
         
-        # Get years
+        # Get years range in data
         years = sorted(market_data['Year'].unique())
-        last_year = max(years)
+        min_year = min(years)
+        max_year = max(years)
+        total_years = max_year - min_year
         
-        # Prepare data for each period
-        cagr_data = []
-        
+        # Adjust periods based on available data
+        adjusted_periods = []
         for period in periods:
             period_years = period.get('years', 5)
-            period_name = period.get('name', f'{period_years}-Year')
-            
-            # Find start year for the period
-            if last_year - period_years in years:
-                start_year = last_year - period_years
+            if period_years <= total_years:
+                adjusted_periods.append(period)
             else:
-                # Find closest available year
-                available_years = [y for y in years if y < last_year]
-                if not available_years:
-                    logger.warning(f"No suitable start year for period {period_name}")
-                    continue
-                start_year = max(available_years)
+                logger.warning(f"Period {period['name']} ({period_years} years) exceeds available data range")
+        
+        if not adjusted_periods:
+            logger.warning("No valid periods for CAGR analysis")
+            return ""
+        
+        # Calculate CAGR for each country and period
+        cagr_data = []
+        
+        for country, group in market_data.groupby(['idGeo', 'Country']):
+            country_id, country_name = country
             
-            # Calculate global CAGR for this period
-            start_total = market_data[market_data['Year'] == start_year]['Value'].sum()
-            end_total = market_data[market_data['Year'] == last_year]['Value'].sum()
-            
-            years_diff = last_year - start_year
-            cagr = (end_total / start_total) ** (1 / years_diff) - 1
-            
-            cagr_data.append({
-                'Period': period_name,
-                'CAGR': cagr * 100,
-                'Years': f'{start_year}-{last_year}'
-            })
+            # Get values for start and end years
+            for period in adjusted_periods:
+                period_name = period['name']
+                period_years = period['years']
+                
+                # Calculate period start and end years
+                end_year = max_year
+                start_year = end_year - period_years
+                
+                # Get values
+                start_value = group[group['Year'] == start_year]['Value'].values
+                end_value = group[group['Year'] == end_year]['Value'].values
+                
+                if len(start_value) > 0 and len(end_value) > 0 and start_value[0] > 0 and period_years > 0:
+                    # Calculate CAGR with proper validation
+                    cagr = (end_value[0] / start_value[0]) ** (1 / period_years) - 1
+                    
+                    cagr_data.append({
+                        'idGeo': country_id,
+                        'Country': country_name,
+                        'Period': period_name,
+                        'Start_Year': start_year,
+                        'End_Year': end_year,
+                        'CAGR': cagr * 100  # Convert to percentage
+                    })
         
         # Convert to DataFrame
         cagr_df = pd.DataFrame(cagr_data)
         
         if cagr_df.empty:
-            logger.warning("No CAGR data available for analysis")
+            logger.warning("No CAGR data available for visualization")
             return ""
         
-        # Sort by period years (if present in period name)
-        def extract_years(period_name):
-            match = re.search(r'(\d+)', period_name)
-            return int(match.group(1)) if match else 0
+        # Create the visualization
+        plt.figure(figsize=(14, 10))
         
-        cagr_df['sort_key'] = cagr_df['Period'].apply(extract_years)
-        cagr_df = cagr_df.sort_values(by='sort_key')
+        # Get top countries by end-year value
+        end_year_data = market_data[market_data['Year'] == max_year]
+        top_n = min(10, len(end_year_data))
+        top_countries = end_year_data.sort_values(by='Value', ascending=False).head(top_n)['Country'].tolist()
         
-        # Create the plot
-        plt.figure(figsize=self.figure_size, dpi=self.dpi)
-        
-        # Create bar chart
-        ax = plt.bar(cagr_df['Period'], cagr_df['CAGR'], 
-                    color=sns.color_palette("Blues_d", len(cagr_df)))
-        
-        # Format axes
-        plt.title(title or f'{self.market_type} CAGR Analysis', fontsize=self.title_fontsize)
-        plt.xlabel('Time Period', fontsize=self.axis_fontsize)
-        plt.ylabel('CAGR (%)', fontsize=self.axis_fontsize)
-        plt.grid(axis='y', alpha=0.3)
-        
-        # Add year range labels
-        for i, (_, row) in enumerate(cagr_df.iterrows()):
-            plt.text(i, row['CAGR'] + 0.5, row['Years'], 
-                    ha='center', fontsize=self.axis_fontsize - 4)
-        
-        # Add value labels on bars
-        for i, v in enumerate(cagr_df['CAGR']):
-            plt.text(i, v / 2, f'{v:.1f}%', 
-                    ha='center', fontsize=self.axis_fontsize, color='white')
-        
-        plt.tight_layout()
-        
-        # Save the figure
-        filename = os.path.join(self.save_path, f'{self.market_type}_CAGR_Analysis.png')
-        plt.savefig(filename)
-        plt.close()
-        
-        logger.info(f"Created CAGR analysis chart: {filename}")
-        
-        return filename
-    
-    def create_market_share_chart(self, market_data: pd.DataFrame, title: str = None,
-                                 top_n: int = 10) -> str:
-        """
-        Create a pie chart of market shares for the final forecast year
-        
-        Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            top_n: Number of top countries to show separately
-            
-        Returns:
-            Path to the saved visualization file
-        """
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        country_col = country_mapping.get('country_column', 'Country')
-        
-        # Get available years
-        years = sorted(market_data['Year'].unique())
-        start_year = min(years)
-        end_year = max(years)
-        
-        # Use the final year data
-        final_year_data = market_data[market_data['Year'] == end_year].copy()
-        
-        # Calculate market shares
-        total_value = final_year_data['Value'].sum()
-        final_year_data['Share'] = final_year_data['Value'] / total_value * 100
-        
-        # Get top N countries
-        top_data = final_year_data.sort_values(by='Value', ascending=False).head(top_n)
-        
-        # Combine remaining countries as "Others"
-        other_data = final_year_data.sort_values(by='Value', ascending=False)[top_n:]
-        other_share = other_data['Share'].sum()
-        
-        # Prepare data for pie chart
-        labels = top_data[country_col].tolist()
-        sizes = top_data['Share'].tolist()
-        
-        if other_share > 0:
-            labels.append('Other Countries')
-            sizes.append(other_share)
-        
-        # Create the plot
-        plt.figure(figsize=self.figure_size, dpi=self.dpi)
-        
-        # Use a custom colormap
-        colors = plt.cm.Spectral(np.linspace(0, 1, len(labels)))
-        
-        # Create pie chart
-        plt.pie(sizes, labels=None, autopct='%1.1f%%', startangle=90, colors=colors, 
-               wedgeprops={'edgecolor': 'w', 'linewidth': 1, 'antialiased': True})
-        
-        # Add legend
-        plt.legend(labels, loc='upper left', bbox_to_anchor=(1, 1), fontsize=self.legend_fontsize)
-        
-        # Format chart
-        plt.title(title or f'{self.market_type} Market Share ({start_year}-{end_year})', fontsize=self.title_fontsize)
-        plt.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle
-        
-        plt.tight_layout()
-        
-        # Save the figure with year range in filename
-        filename = os.path.join(self.save_path, f'{self.market_type}_Market_Share_{start_year}-{end_year}.png')
-        plt.savefig(filename)
-        plt.close()
-        
-        logger.info(f"Created market share chart: {filename}")
-        
-        return filename
-    
-    def create_forecast_comparison_chart(self, market_data: pd.DataFrame, title: str = None,
-                                        years: List[int] = None) -> str:
-        """
-        Create a bar chart comparing market sizes for specific years
-        
-        Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            years: List of years to compare (defaults to first, middle, and last)
-            
-        Returns:
-            Path to the saved visualization file
-        """
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        country_col = country_mapping.get('country_column', 'Country')
-        
-        # Get all years
-        all_years = sorted(market_data['Year'].unique())
-        
-        # Default to first, middle, and last year if not specified
-        if not years:
-            if len(all_years) < 3:
-                years = all_years
-            else:
-                years = [all_years[0], all_years[len(all_years) // 2], all_years[-1]]
-        
-        # Filter only available years
-        years = [y for y in years if y in all_years]
-        
-        if not years:
-            logger.warning("No valid years for forecast comparison")
-            return ""
-        
-        # Prepare data for comparison
-        comparison_data = []
-        
-        # Get top 5 countries from the last year
-        last_year = max(years)
-        last_year_data = market_data[market_data['Year'] == last_year].copy()
-        top_countries = last_year_data.sort_values(by='Value', ascending=False).head(5)[id_col].tolist()
-        
-        # Get data for selected years and top countries
-        for year in years:
-            year_data = market_data[market_data['Year'] == year].copy()
-            
-            # Get global total
-            global_total = year_data['Value'].sum()
-            comparison_data.append({
-                'Year': str(year),
-                'Country': 'Global Total',
-                'Value': global_total
-            })
-            
-            # Get data for top countries
-            top_data = year_data[year_data[id_col].isin(top_countries)]
-            
-            for _, row in top_data.iterrows():
-                comparison_data.append({
-                    'Year': str(year),
-                    'Country': row[country_col],
-                    'Value': row['Value']
-                })
-        
-        # Convert to DataFrame
-        comparison_df = pd.DataFrame(comparison_data)
-        
-        # Pivot for grouped bar chart
-        chart_data = comparison_df.pivot(index='Country', columns='Year', values='Value')
-        
-        # Ensure Global Total is first
-        if 'Global Total' in chart_data.index:
-            chart_data = pd.concat([
-                chart_data.loc[['Global Total']],
-                chart_data.drop('Global Total')
-            ])
-        
-        # Create the plot
-        plt.figure(figsize=(14, 8), dpi=self.dpi)
+        # Filter CAGR data to include only top countries
+        top_cagr_data = cagr_df[cagr_df['Country'].isin(top_countries)]
         
         # Create grouped bar chart
-        ax = chart_data.plot(kind='bar', figsize=(14, 8))
-        
-        # Format axes
-        plt.title(title or f'{self.market_type} Market Forecast Comparison', fontsize=self.title_fontsize)
-        plt.xlabel('', fontsize=self.axis_fontsize)
-        plt.ylabel('Market Size', fontsize=self.axis_fontsize)
-        
-        # Format y-axis to show values in billions
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${x/1e9:.1f}B'))
-        
-        plt.grid(axis='y', alpha=0.3)
-        plt.legend(fontsize=self.legend_fontsize, title='Year')
-        
-        # Add value labels with proper formatting
-        def format_value(x):
-            if x >= 1e9:
-                return f'${x/1e9:.1f}B'
-            else:
-                return f'${x/1e6:.1f}M'
+        ax = sns.barplot(
+            data=top_cagr_data,
+            x='Country',
+            y='CAGR',
+            hue='Period',
+            palette=self.color_palette[:len(adjusted_periods)]
+        )
         
         # Add value labels
-        for container in ax.containers:
-            ax.bar_label(container, 
-                        labels=[format_value(v) for v in container.datavalues],
-                        fontsize=self.axis_fontsize - 4,
-                        label_type='edge',
-                        padding=4)
+        for i, bars in enumerate(ax.containers):
+            ax.bar_label(bars, fmt='%.1f%%', fontsize=9)
         
+        # Customize plot
+        plt.title(title, fontsize=16)
+        plt.xlabel('Country', fontsize=12)
+        plt.ylabel('CAGR (%)', fontsize=12)
         plt.xticks(rotation=45, ha='right')
+        plt.legend(title='Period', fontsize=10)
+        plt.grid(True, axis='y', alpha=0.3)
         plt.tight_layout()
         
-        # Save the figure
-        filename = os.path.join(self.save_path, f'{self.market_type}_Forecast_Comparison.png')
-        plt.savefig(filename, bbox_inches='tight')
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_CAGR_Analysis.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
         plt.close()
         
-        logger.info(f"Created forecast comparison chart: {filename}")
-        
-        return filename
+        logger.info(f"Saved CAGR analysis visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        return output_file
     
-    def create_regional_analysis(self, market_data: pd.DataFrame, title: str = None, 
-                               specific_year: int = None, analysis_years: list = None) -> str:
+    def _create_regional_analysis_visualization(self, market_data: pd.DataFrame,
+                                               config: Dict[str, Any]) -> str:
         """
-        Create a regional analysis chart showing market shares by region
+        Create regional analysis visualization
         
         Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            specific_year: Optional specific year to show regional shares for
-            analysis_years: Optional list of years to analyze
+            market_data: DataFrame with market forecast data
+            config: Visualization configuration
             
         Returns:
-            Path to the saved visualization file or list of file paths
+            Path to the generated visualization file
         """
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        country_col = country_mapping.get('country_column', 'Country')
+        logger.info("Generating regional analysis visualization")
         
-        # Get regional configuration
-        viz_config = self.config_manager.get_visualization_config('regional_analysis')
-        regions = viz_config.get('regions', [])
-        
-        if not regions:
-            logger.warning("No regional configuration found")
+        # Check if data includes regions
+        if 'is_region' not in market_data.columns or market_data['is_region'].sum() == 0:
+            logger.warning("No regional data found for visualization")
             return ""
         
-        # Create a mapping of countries to regions
-        country_to_region = {}
-        for region in regions:
-            for country in region.get('countries', []):
-                country_to_region[country] = region['name']
+        # Get configuration
+        title = config.get('title', f"{self.market_type} Regional Analysis")
+        title = self._replace_variables(title)
         
-        # Add region information to market data
-        market_data['Region'] = market_data[country_col].map(country_to_region)
+        # Get specific year from config, or use the latest year
+        specific_year = config.get('specific_year')
+        analysis_years = config.get('analysis_years')
+        years = sorted(market_data['Year'].unique())
         
-        # Get available years
-        available_years = sorted(market_data['Year'].unique())
-        
-        # Handle analysis years if provided
-        if analysis_years:
-            years_to_analyze = [year for year in analysis_years if year in available_years]
-            if not years_to_analyze:
-                logger.warning(f"None of the specified analysis years {analysis_years} found in data")
-                return ""
-        elif specific_year:
-            if specific_year not in available_years:
-                logger.warning(f"Specified year {specific_year} not found in data")
-                return ""
+        if specific_year and specific_year in years:
             years_to_analyze = [specific_year]
+        elif analysis_years and isinstance(analysis_years, list):
+            years_to_analyze = [year for year in analysis_years if year in years]
         else:
-            years_to_analyze = [max(available_years)]  # Default to most recent year
+            # Default to latest year
+            years_to_analyze = [max(years)]
         
-        generated_files = []
+        if not years_to_analyze:
+            logger.warning("No valid years for regional analysis")
+            return ""
         
-        # Create horizontal bar charts for each year
+        # Filter for regions only (top-level regions)
+        region_data = market_data[market_data['is_region'] == True].copy()
+        
+        # Get top-level regions (excluding "Worldwide" or similar global totals)
+        exclude_terms = ['world', 'global', 'total', 'worldwide']
+        
+        def is_top_level_region(row):
+            return (row['is_region'] and 
+                   not any(term in row['Country'].lower() for term in exclude_terms))
+        
+        top_regions = region_data[region_data.apply(is_top_level_region, axis=1)]
+        
+        if top_regions.empty:
+            logger.warning("No top-level regions found for visualization")
+            return ""
+        
+        # Create visualizations for each analysis year
+        output_files = []
+        
         for year in years_to_analyze:
-            year_data = market_data[market_data['Year'] == year].copy()
-            total_value = year_data['Value'].sum()
+            # Filter for the specific year
+            year_data = top_regions[top_regions['Year'] == year].copy()
             
-            # Group by region and calculate shares and values
-            region_data = year_data.groupby('Region').agg({
-                'Value': 'sum'
-            }).reset_index()
+            if year_data.empty:
+                logger.warning(f"No regional data found for year {year}")
+                continue
             
-            region_data['Share'] = region_data['Value'] / total_value * 100
-            region_data = region_data.sort_values('Share', ascending=True)  # For bottom-to-top display
+            # Sort by value
+            year_data = year_data.sort_values(by='Value', ascending=False)
             
-            # Create the plot
-            plt.figure(figsize=(12, 6), dpi=self.dpi)
+            # Create pie chart
+            plt.figure(figsize=(10, 10))
+            plt.pie(
+                year_data['Value'],
+                labels=year_data['Country'],
+                autopct='%1.1f%%',
+                startangle=90,
+                colors=self.color_palette[:len(year_data)],
+                wedgeprops={'edgecolor': 'w', 'linewidth': 1},
+                textprops={'fontsize': 12}
+            )
             
-            # Create horizontal bar chart
-            bars = plt.barh(region_data['Region'], region_data['Share'], 
-                          color=plt.cm.Spectral(np.linspace(0, 1, len(region_data))))
+            plt.title(f"{title} ({year})", fontsize=16)
+            plt.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle
             
-            # Format chart
-            plt.title(f'{self.market_type} Regional Market Share Distribution - {year}', 
-                     fontsize=self.title_fontsize, pad=20)
-            plt.xlabel('Market Share (%)', fontsize=self.axis_fontsize)
-            plt.ylabel('Region', fontsize=self.axis_fontsize)
-            
-            # Add value labels on bars
-            for i, bar in enumerate(bars):
-                value = region_data.iloc[i]['Value']
-                share = region_data.iloc[i]['Share']
-                
-                # Format value string
-                if value >= 1e9:
-                    value_str = f'${value/1e9:.1f}B'
-                else:
-                    value_str = f'${value/1e6:.1f}M'
-                
-                # Add percentage and value labels
-                plt.text(bar.get_width(), bar.get_y() + bar.get_height()/2,
-                        f' {share:.1f}% ({value_str})',
-                        va='center', fontsize=self.axis_fontsize - 2)
-            
-            plt.grid(axis='x', alpha=0.3)
-            plt.tight_layout()
-            
-            # Save the figure
-            filename = os.path.join(self.save_path, 
-                                  f'{self.market_type}_Regional_Analysis_{year}.png')
-            plt.savefig(filename, bbox_inches='tight')
+            # Save the visualization
+            output_file = os.path.join(self.output_dir, f"{self.market_type}_Regional_Analysis_{year}.png")
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
             plt.close()
             
-            logger.info(f"Created regional analysis chart for {year}: {filename}")
-            generated_files.append(filename)
+            logger.info(f"Saved regional analysis visualization for {year} to {output_file}")
+            self.visualization_files.append(output_file)
+            output_files.append(output_file)
         
-        # If analyzing multiple years, create a trend chart
+        # If we have multiple years, create a trend visualization
         if len(years_to_analyze) > 1:
-            self._create_regional_trend_chart(market_data, years_to_analyze, title)
+            self._create_regional_trend_chart(top_regions, years_to_analyze, config)
         
-        return generated_files[0] if len(generated_files) == 1 else generated_files
+        # Return the first output file as reference
+        return output_files[0] if output_files else ""
     
-    def _create_regional_trend_chart(self, market_data: pd.DataFrame, years: list, title: str = None):
+    def _create_regional_trend_chart(self, region_data: pd.DataFrame,
+                                    years: List[int],
+                                    config: Dict[str, Any]) -> str:
         """
-        Create a trend chart showing regional shares over multiple years
-        """
-        trend_data = []
-        for year in years:
-            year_data = market_data[market_data['Year'] == year].copy()
-            total_value = year_data['Value'].sum()
-            region_shares = year_data.groupby('Region')['Value'].sum() / total_value * 100
-            
-            for region, share in region_shares.items():
-                trend_data.append({
-                    'Year': year,
-                    'Region': region,
-                    'Share': share,
-                    'Value': year_data[year_data['Region'] == region]['Value'].sum()
-                })
-        
-        trend_df = pd.DataFrame(trend_data)
-        
-        plt.figure(figsize=(12, 6), dpi=self.dpi)
-        
-        # Create line plot for each region
-        for region in trend_df['Region'].unique():
-            region_data = trend_df[trend_df['Region'] == region]
-            plt.plot(region_data['Year'], region_data['Share'], 
-                    marker='o', label=region, linewidth=2)
-        
-        plt.title(f'{self.market_type} Regional Share Evolution ({min(years)}-{max(years)})',
-                 fontsize=self.title_fontsize)
-        plt.xlabel('Year', fontsize=self.axis_fontsize)
-        plt.ylabel('Market Share (%)', fontsize=self.axis_fontsize)
-        plt.grid(True, alpha=0.3)
-        plt.legend(fontsize=self.legend_fontsize, loc='center left', bbox_to_anchor=(1, 0.5))
-        
-        # Add value labels for the final year
-        final_year = max(years)
-        final_data = trend_df[trend_df['Year'] == final_year]
-        
-        for _, row in final_data.iterrows():
-            value = row['Value']
-            if value >= 1e9:
-                value_str = f'${value/1e9:.1f}B'
-            else:
-                value_str = f'${value/1e6:.1f}M'
-            
-            plt.text(row['Year'], row['Share'], 
-                    f' {row["Share"]:.1f}%\n ({value_str})',
-                    ha='left', va='bottom', fontsize=self.axis_fontsize - 4)
-        
-        plt.tight_layout()
-        
-        # Save the trend chart
-        filename = os.path.join(self.save_path, 
-                              f'{self.market_type}_Regional_Share_Evolution_{min(years)}-{max(years)}.png')
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close()
-        
-        logger.info(f"Created regional share evolution chart: {filename}")
-    
-    def create_top_countries_chart(self, market_data: pd.DataFrame, title: str = None,
-                                   top_n: int = 10, specific_countries: List[str] = None,
-                                   year: int = None) -> str:
-        """
-        Create a horizontal bar chart showing market values for top N countries or specific countries
+        Create regional trend chart
         
         Args:
-            market_data: DataFrame with distributed market values
-            title: Chart title
-            top_n: Number of top countries to show (if specific_countries not provided)
-            specific_countries: Optional list of specific countries to include
-            year: Optional specific year to analyze (defaults to latest year)
+            region_data: DataFrame with regional data
+            years: List of years to include
+            config: Visualization configuration
             
         Returns:
-            Path to the saved visualization file
+            Path to the generated visualization file
         """
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        country_col = country_mapping.get('country_column', 'Country')
+        # Filter for the specified years
+        trend_data = region_data[region_data['Year'].isin(years)].copy()
         
-        # Use the specified year or latest year
-        available_years = sorted(market_data['Year'].unique())
-        target_year = year if year in available_years else max(available_years)
+        if trend_data.empty:
+            return ""
         
-        # Filter data for target year
-        year_data = market_data[market_data['Year'] == target_year].copy()
-        total_value = year_data['Value'].sum()
+        # Create the visualization
+        plt.figure(figsize=(14, 8))
         
-        # Ensure consistent country naming
-        country_name_mapping = {
-            'China': 'Mainland China',
-            'People\'s Republic of China': 'Mainland China',
-            'PRC': 'Mainland China'
-        }
-        year_data[country_col] = year_data[country_col].replace(country_name_mapping)
+        # Line chart of regional values over time
+        sns.lineplot(
+            data=trend_data,
+            x='Year',
+            y='Value',
+            hue='Country',
+            style='Country',
+            markers=True,
+            dashes=False,
+            palette=self.color_palette[:len(trend_data['Country'].unique())]
+        )
         
-        # Filter countries based on input
-        if specific_countries:
-            # Replace any variations of China in specific_countries
-            specific_countries = [country_name_mapping.get(c, c) for c in specific_countries]
-            filtered_data = year_data[year_data[country_col].isin(specific_countries)]
-            if filtered_data.empty:
-                logger.warning("None of the specified countries found in data")
-                return ""
-        else:
-            filtered_data = year_data.nlargest(top_n, 'Value')
+        # Format y-axis as millions/billions
+        plt.gca().yaxis.set_major_formatter(FuncFormatter(self._format_value_axis))
         
-        # Sort by value descending for better visualization
-        filtered_data = filtered_data.sort_values('Value', ascending=True)
-        filtered_data['Share'] = filtered_data['Value'] / total_value * 100
-        
-        # Create the plot with larger figure size for better readability
-        plt.figure(figsize=(14, 8), dpi=self.dpi)
-        
-        # Create horizontal bar chart with custom colors
-        colors = plt.cm.Spectral(np.linspace(0, 1, len(filtered_data)))
-        bars = plt.barh(filtered_data[country_col], filtered_data['Value'] / 1e9, color=colors)
-        
-        # Format chart with year in main title
-        chart_title = f'{self.market_type} Top Countries Analysis - {target_year}'
-        plt.title(chart_title, fontsize=self.title_fontsize + 2, pad=20)
-        
-        plt.xlabel('Market Size (Billion USD)', fontsize=self.axis_fontsize)
-        plt.ylabel('Country', fontsize=self.axis_fontsize)
-        
-        # Add value and share labels on bars with improved formatting
-        for i, bar in enumerate(bars):
-            value = filtered_data.iloc[i]['Value']
-            share = filtered_data.iloc[i]['Share']
-            
-            # Format value string with billions and millions
-            if value >= 1e9:
-                value_str = f'${value/1e9:.2f}B'
-            else:
-                value_str = f'${value/1e6:.1f}M'
-            
-            # Position the text at the end of each bar
-            plt.text(bar.get_width(), bar.get_y() + bar.get_height()/2,
-                    f'  {value_str} ({share:.1f}%)',
-                    va='center', fontsize=self.axis_fontsize,
-                    fontweight='bold')
-        
-        # Enhance grid and layout
-        plt.grid(axis='x', alpha=0.3, linestyle='--')
-        
-        # Add a light background color for better contrast
-        ax = plt.gca()
-        ax.set_facecolor('#f8f9fa')
-        plt.gcf().patch.set_facecolor('white')
-        
-        # Format x-axis to show billions
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${x:.0f}B'))
-        
-        # Add total market size in the title
-        total_str = f'${total_value/1e9:.2f}B'
-        plt.suptitle(f'Total Market Size: {total_str}', y=0.95, fontsize=self.title_fontsize - 2)
-        
+        # Customize plot
+        title = config.get('title', f"{self.market_type} Regional Trends")
+        title = self._replace_variables(title)
+        plt.title(title, fontsize=16)
+        plt.xlabel('Year', fontsize=12)
+        plt.ylabel('Market Value', fontsize=12)
+        plt.legend(title='Region', fontsize=10, loc='best')
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
         
-        # Save the figure with year in filename
-        filename_prefix = 'Selected_Countries' if specific_countries else f'Top_{len(filtered_data)}_Countries'
-        filename = os.path.join(self.save_path, 
-                              f'{self.market_type}_{filename_prefix}_Market_Size_{target_year}.png')
-        plt.savefig(filename, bbox_inches='tight', facecolor='white')
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_Regional_Trends.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
         plt.close()
         
-        logger.info(f"Created top countries market size chart: {filename}")
-        return filename
+        logger.info(f"Saved regional trends visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        return output_file
+    
+    def _create_causal_influence_visualization(self, market_data: pd.DataFrame,
+                                              config: Dict[str, Any]) -> str:
+        """
+        Create causal influence visualization
+        
+        Args:
+            market_data: DataFrame with market forecast data
+            config: Visualization configuration
+            
+        Returns:
+            Path to the generated visualization file
+        """
+        logger.info("Generating causal influence visualization")
+        
+        # Try to get causal strengths from indicator analyzer
+        try:
+            # Attempt to access causal integration via market analyzer
+            from src.market_analysis.market_analyzer import MarketAnalyzer
+            
+            # Try to get our parent MarketAnalyzer instance by looking at the caller chain
+            import inspect
+            frame = inspect.currentframe()
+            frames = inspect.getouterframes(frame)
+            
+            market_analyzer = None
+            for caller_frame in frames:
+                if 'self' in caller_frame.frame.f_locals:
+                    self_obj = caller_frame.frame.f_locals['self']
+                    if isinstance(self_obj, MarketAnalyzer):
+                        market_analyzer = self_obj
+                        break
+            
+            if market_analyzer and hasattr(market_analyzer, 'causal_integration'):
+                causal_strengths = market_analyzer.causal_integration.get_causal_strengths()
+            else:
+                # Fallback to trying to create our own instance
+                from src.indicators.causal_indicator_integration import CausalIndicatorIntegration
+                from src.indicators.indicator_analyzer import IndicatorAnalyzer
+                
+                indicator_analyzer = IndicatorAnalyzer(self.config_manager, self.data_loader)
+                causal_integration = CausalIndicatorIntegration(
+                    self.config_manager, self.data_loader, indicator_analyzer
+                )
+                
+                # See if we have pre-computed causal strengths
+                causal_strengths = causal_integration.get_causal_strengths()
+                
+                # If no pre-computed strengths, we can't calculate them here
+                if not causal_strengths:
+                    logger.warning("No causal strengths available for visualization")
+                    return ""
+                
+        except Exception as e:
+            logger.warning(f"Error accessing causal integration: {str(e)}")
+            return ""
+        
+        if not causal_strengths:
+            logger.warning("No causal strengths available for visualization")
+            return ""
+        
+        # Create DataFrame for visualization
+        data = []
+        for ind_name, strength in causal_strengths.items():
+            data.append({
+                'Indicator': ind_name,
+                'Causal Strength': strength
+            })
+        
+        causal_df = pd.DataFrame(data)
+        
+        # Sort by causal strength
+        causal_df = causal_df.sort_values('Causal Strength', ascending=False)
+        
+        # Get top N indicators
+        top_n = config.get('top_n_indicators', 10)
+        top_indicators = causal_df.head(top_n)
+        
+        # Create the visualization
+        plt.figure(figsize=(12, 8))
+        
+        # Horizontal bar chart for better readability with indicator names
+        ax = sns.barplot(
+            y='Indicator',
+            x='Causal Strength',
+            data=top_indicators,
+            palette=sns.color_palette("YlOrRd", n_colors=len(top_indicators))
+        )
+        
+        # Add value labels
+        for i, v in enumerate(top_indicators['Causal Strength']):
+            ax.text(v + 0.01, i, f"{v:.3f}", va='center')
+        
+        # Customize plot
+        title = config.get('title', f"{self.market_type} Causal Indicator Influence")
+        title = self._replace_variables(title)
+        plt.title(title, fontsize=16)
+        plt.xlabel('Causal Strength (0-1 scale)', fontsize=12)
+        plt.ylabel('Indicator', fontsize=12)
+        plt.xlim(0, 1.1 * top_indicators['Causal Strength'].max())
+        plt.tight_layout()
+        
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_Causal_Influence.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved causal influence visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        
+        # Create causal network graph if available
+        try:
+            if market_analyzer and hasattr(market_analyzer, 'causal_integration') and \
+               hasattr(market_analyzer.causal_integration, 'causal_graph'):
+                causal_graph = market_analyzer.causal_integration.causal_graph
+                if causal_graph and len(causal_graph.edges()) > 0:
+                    self._create_causal_network_visualization(causal_graph, config)
+        except Exception as e:
+            logger.warning(f"Error creating causal network visualization: {str(e)}")
+        
+        return output_file
+    
+    def _create_causal_network_visualization(self, causal_graph: nx.DiGraph,
+                                            config: Dict[str, Any]) -> str:
+        """
+        Create causal network visualization
+        
+        Args:
+            causal_graph: NetworkX directed graph with causal relationships
+            config: Visualization configuration
+            
+        Returns:
+            Path to the generated visualization file
+        """
+        logger.info("Generating causal network visualization")
+        
+        plt.figure(figsize=(14, 10))
+        
+        # Position nodes using a hierarchical layout
+        pos = nx.spring_layout(causal_graph, seed=42)
+        
+        # Define node colors by type
+        node_colors = []
+        for node in causal_graph.nodes():
+            node_type = causal_graph.nodes[node].get('type', '')
+            if node_type == 'target':
+                node_colors.append('red')
+            elif node_type == 'indicator':
+                node_colors.append('skyblue')
+            elif node_type == 'lag':
+                node_colors.append('lightgreen')
+            else:
+                node_colors.append('gray')
+        
+        # Get edge weights for thickness
+        edge_weights = [causal_graph[u][v].get('weight', 0.1) * 3 for u, v in causal_graph.edges()]
+        
+        # Draw the graph
+        nx.draw_networkx(
+            causal_graph,
+            pos=pos,
+            with_labels=True,
+            node_color=node_colors,
+            node_size=1000,
+            font_size=10,
+            width=edge_weights,
+            edge_color='gray',
+            arrows=True,
+            arrowstyle='-|>',
+            arrowsize=15
+        )
+        
+        # Add legend
+        legend_elements = [
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=15, label='Market Value'),
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='skyblue', markersize=15, label='Indicator'),
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='lightgreen', markersize=15, label='Lagged Variable')
+        ]
+        plt.legend(handles=legend_elements, loc='upper right')
+        
+        # Add title
+        title = config.get('title', f"{self.market_type} Causal Network")
+        title = self._replace_variables(title)
+        plt.title(title, fontsize=16)
+        
+        # Remove axes
+        plt.axis('off')
+        
+        # Save the visualization
+        output_file = os.path.join(self.output_dir, f"{self.market_type}_Causal_Network.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved causal network visualization to {output_file}")
+        self.visualization_files.append(output_file)
+        return output_file
     
     def generate_excel_report(self, market_data: pd.DataFrame) -> str:
         """
-        Generate an Excel report with market data in wide format (years as columns)
+        Generate a comprehensive Excel report
         
         Args:
-            market_data: DataFrame with market data
+            market_data: DataFrame with market forecast data
             
         Returns:
             Path to the generated Excel file
         """
-        # Create a writer for Excel file
-        filename = os.path.join(self.save_path, f'{self.market_type}_Market_Forecast.xlsx')
-        writer = pd.ExcelWriter(filename, engine='openpyxl')
+        logger.info("Generating Excel report")
         
-        # Get column names from mapping
-        country_mapping = self.config_manager.get_column_mapping('country_historical')
-        id_col = country_mapping.get('id_column', 'idGeo')
-        name_col = country_mapping.get('name_column', 'Country')
+        # Create Excel writer
+        excel_path = os.path.join(self.output_dir, f"{self.market_type}_Market_Forecast_Report.xlsx")
         
-        # Create a summary sheet with global market data
-        global_data = self._extract_global_data(market_data)
-        global_data.to_excel(writer, sheet_name='Global Market', index=False)
-        
-        # Determine which value column to use
-        value_column = None
-        for col in ['market_value', 'Value', 'value']:
-            if col in market_data.columns:
-                value_column = col
-                break
-        
-        if not value_column:
-            logger.warning("No value column found in market data")
-            writer.close()
-            return filename
-        
-        # Create a wide format version of the data (years as columns)
-        if 'Year' in market_data.columns:
-            # Create pivot table with years as columns
-            wide_data = market_data.pivot_table(
-                index=[id_col, name_col], 
-                columns='Year',
-                values=value_column,
-                aggfunc='sum'
-            ).reset_index()
-            
-            # Save to Excel
-            wide_data.to_excel(writer, sheet_name='Market Data (Wide)', index=False)
-            
-            # Also save market share in wide format if available
-            if 'market_share' in market_data.columns:
-                share_data = market_data.pivot_table(
-                    index=[id_col, name_col], 
-                    columns='Year',
-                    values='market_share',
-                    aggfunc='sum'
-                ).reset_index()
+        try:
+            with pd.ExcelWriter(excel_path, engine='xlsxwriter') as writer:
+                workbook = writer.book
                 
-                share_data.to_excel(writer, sheet_name='Market Share (Wide)', index=False)
-        
-        # Also include the original data in a separate sheet
-        market_data.to_excel(writer, sheet_name='Market Data (Long)', index=False)
-        
-        # Create a sheet with top countries for the latest year
-        latest_year = market_data['Year'].max() if 'Year' in market_data.columns else None
-        if latest_year:
-            latest_data = market_data[market_data['Year'] == latest_year].copy()
+                # Add report sheets
+                self._add_summary_sheet(workbook, writer, market_data)
+                self._add_market_size_sheet(workbook, writer, market_data)
+                self._add_growth_rates_sheet(workbook, writer, market_data)
+                self._add_region_sheet(workbook, writer, market_data)
+                
+                # Try to add causal analysis sheet if available
+                try:
+                    self._add_causal_analysis_sheet(workbook, writer, market_data)
+                except Exception as e:
+                    logger.warning(f"Error adding causal analysis sheet: {str(e)}")
             
-            # Determine which column to use for sorting
-            value_column = None
-            for col in ['market_value', 'Value', 'value']:
-                if col in latest_data.columns:
-                    value_column = col
-                    break
+            logger.info(f"Generated Excel report: {excel_path}")
+            self.visualization_files.append(excel_path)
+            return excel_path
             
-            if value_column:
-                latest_data = latest_data.sort_values(value_column, ascending=False)
-                latest_data.to_excel(writer, sheet_name=f'Top Countries {latest_year}', index=False)
-        
-        # Save the Excel file
-        writer.close()
-        
-        logger.info(f"Generated Excel report: {filename}")
-        return filename
+        except Exception as e:
+            logger.error(f"Error generating Excel report: {str(e)}")
+            return ""
     
-    def _extract_global_data(self, market_data: pd.DataFrame) -> pd.DataFrame:
+    def _add_summary_sheet(self, workbook, writer, market_data: pd.DataFrame) -> None:
         """
-        Extract global market data from the distributed market data
+        Add market summary sheet to Excel report
         
         Args:
-            market_data: DataFrame with market data
+            workbook: Excel workbook
+            writer: Excel writer
+            market_data: DataFrame with market forecast data
+        """
+        # Create summary sheet
+        summary_sheet = workbook.add_worksheet('Market Summary')
+        
+        # Add formats
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter',
+            'border': 1
+        })
+        
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1
+        })
+        
+        value_format = workbook.add_format({
+            'num_format': '$#,##0.00',
+            'border': 1
+        })
+        
+        percent_format = workbook.add_format({
+            'num_format': '0.00%',
+            'border': 1
+        })
+        
+        text_format = workbook.add_format({
+            'border': 1
+        })
+        
+        # Add title
+        summary_sheet.merge_range('A1:F1', f"{self.market_type} Market Forecast Summary", title_format)
+        
+        # Add summary statistics
+        row = 2
+        
+        # Market period
+        years = sorted(market_data['Year'].unique())
+        first_year = min(years)
+        last_year = max(years)
+        
+        summary_sheet.write(row, 0, 'Analysis Period', header_format)
+        summary_sheet.merge_range(f'B{row+1}:F{row+1}', f"{first_year} - {last_year}", text_format)
+        row += 2
+        
+        # Global values
+        first_year_data = market_data[market_data['Year'] == first_year]
+        last_year_data = market_data[market_data['Year'] == last_year]
+        
+        # Filter to exclude regions for base calculations
+        if 'is_region' in market_data.columns:
+            first_year_data = first_year_data[~first_year_data['is_region']]
+            last_year_data = last_year_data[~last_year_data['is_region']]
+        
+        first_year_total = first_year_data['Value'].sum()
+        last_year_total = last_year_data['Value'].sum()
+        
+        # Calculate global CAGR with proper validation
+        years_diff = last_year - first_year
+        if years_diff > 0 and first_year_total > 0:
+            global_cagr = (last_year_total / first_year_total) ** (1 / years_diff) - 1
+        else:
+            logger.warning(f"Cannot calculate global CAGR: years_diff={years_diff}, first_year_total={first_year_total}")
+            global_cagr = 0.0
+        
+        summary_sheet.write(row, 0, 'Market Size', header_format)
+        summary_sheet.write(row, 1, f"First Year ({first_year})", header_format)
+        summary_sheet.write(row, 2, f"Last Year ({last_year})", header_format)
+        summary_sheet.write(row, 3, 'Growth Multiple', header_format)
+        summary_sheet.write(row, 4, 'CAGR', header_format)
+        
+        row += 1
+        summary_sheet.write(row, 0, 'Global Market', text_format)
+        summary_sheet.write(row, 1, first_year_total, value_format)
+        summary_sheet.write(row, 2, last_year_total, value_format)
+        summary_sheet.write(row, 3, last_year_total / first_year_total, text_format)
+        summary_sheet.write(row, 4, global_cagr, percent_format)
+        
+        row += 2
+        
+        # Top countries table
+        summary_sheet.write(row, 0, 'Top Countries', header_format)
+        summary_sheet.merge_range(f'A{row+1}:F{row+1}', f"Top 10 Countries by Market Size ({last_year})", header_format)
+        
+        row += 2
+        # Table headers
+        summary_sheet.write(row, 0, 'Country', header_format)
+        summary_sheet.write(row, 1, f"Value ({last_year})", header_format)
+        summary_sheet.write(row, 2, 'Market Share', header_format)
+        summary_sheet.write(row, 3, f"Value ({first_year})", header_format)
+        summary_sheet.write(row, 4, 'Growth Multiple', header_format)
+        summary_sheet.write(row, 5, 'CAGR', header_format)
+        
+        row += 1
+        
+        # Get top 10 countries by last year value
+        top_countries = last_year_data.sort_values(by='Value', ascending=False).head(10)
+        
+        for _, country_row in top_countries.iterrows():
+            country_id = country_row['idGeo']
+            country_name = country_row['Country']
+            last_year_value = country_row['Value']
             
-        Returns:
-            DataFrame with global market data by year
-        """
-        # Create a copy to avoid modifying the original
-        df = market_data.copy()
+            # Get first year value for this country
+            first_year_value = first_year_data[first_year_data['idGeo'] == country_id]['Value'].values
+            
+            if len(first_year_value) > 0:
+                first_year_value = first_year_value[0]
+                growth_multiple = last_year_value / first_year_value
+                country_cagr = (growth_multiple) ** (1 / years_diff) - 1
+            else:
+                first_year_value = 0
+                growth_multiple = 0
+                country_cagr = 0
+            
+            # Calculate market share
+            market_share = last_year_value / last_year_total
+            
+            # Add to table
+            summary_sheet.write(row, 0, country_name, text_format)
+            summary_sheet.write(row, 1, last_year_value, value_format)
+            summary_sheet.write(row, 2, market_share, percent_format)
+            summary_sheet.write(row, 3, first_year_value, value_format)
+            summary_sheet.write(row, 4, growth_multiple, text_format)
+            summary_sheet.write(row, 5, country_cagr, percent_format)
+            
+            row += 1
         
-        # Check if we have a Year column
-        if 'Year' not in df.columns:
-            return pd.DataFrame()
-        
-        # Determine which value column to use
-        value_column = None
-        for col in ['market_value', 'Value', 'value']:
-            if col in df.columns:
-                value_column = col
-                break
-        
-        if not value_column:
-            return pd.DataFrame()
-        
-        # Determine which original value column to use
-        original_column = None
-        for col in ['original_value', 'original_market_value', 'original_share']:
-            if col in df.columns:
-                original_column = col
-                break
-        
-        # Group by year and sum values
-        agg_dict = {value_column: 'sum'}
-        if original_column:
-            agg_dict[original_column] = 'sum'
-        
-        global_data = df.groupby('Year').agg(agg_dict).reset_index()
-        
-        # Rename columns for clarity
-        rename_dict = {value_column: 'Total Market Value'}
-        if original_column:
-            rename_dict[original_column] = 'Original Market Value'
-        
-        global_data = global_data.rename(columns=rename_dict)
-        
-        return global_data
+        # Set column widths
+        summary_sheet.set_column('A:A', 20)
+        summary_sheet.set_column('B:F', 15)
     
-    def _replace_placeholders(self, text: str) -> str:
+    def _add_market_size_sheet(self, workbook, writer, market_data: pd.DataFrame) -> None:
         """
-        Replace placeholders in text with actual values
+        Add market size sheet to Excel report
         
         Args:
-            text: Text with placeholders
+            workbook: Excel workbook
+            writer: Excel writer
+            market_data: DataFrame with market forecast data
+        """
+        # Create pivot table with years as columns
+        pivot_data = market_data.pivot_table(
+            index=['idGeo', 'Country'],
+            columns='Year',
+            values='Value',
+            aggfunc='sum'
+        )
+        
+        # Write to Excel
+        pivot_data.to_excel(writer, sheet_name='Market Size')
+        
+        # Get the worksheet
+        worksheet = writer.sheets['Market Size']
+        
+        # Add title
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+        
+        # Determine range based on number of years
+        years = sorted(market_data['Year'].unique())
+        end_col = chr(ord('A') + len(years) + 1)
+        worksheet.merge_range(f'A1:{end_col}1', f"{self.market_type} Market Size by Country", title_format)
+        
+        # Format the sheet
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1
+        })
+        
+        # Apply formats
+        worksheet.set_column('A:A', 20)  # ID column
+        worksheet.set_column('B:B', 25)  # Country name
+        worksheet.set_column(f'C:{end_col}', 15)  # Year columns
+    
+    def _add_growth_rates_sheet(self, workbook, writer, market_data: pd.DataFrame) -> None:
+        """
+        Add growth rates sheet to Excel report
+        
+        Args:
+            workbook: Excel workbook
+            writer: Excel writer
+            market_data: DataFrame with market forecast data
+        """
+        # Calculate year-over-year growth rates
+        growth_data = []
+        
+        # Group by country
+        for country, group in market_data.groupby(['idGeo', 'Country']):
+            country_id, country_name = country
+            
+            # Sort by year
+            group = group.sort_values(by='Year')
+            
+            # Calculate growth rate
+            group['Growth_Rate'] = group['Value'].pct_change() * 100
+            
+            # Add to results (excluding first year which has no growth rate)
+            growth_data.append(group.iloc[1:])
+        
+        # Combine all data
+        growth_df = pd.concat(growth_data, ignore_index=True)
+        
+        # Create pivot table with years as columns
+        pivot_data = growth_df.pivot_table(
+            index=['idGeo', 'Country'],
+            columns='Year',
+            values='Growth_Rate',
+            aggfunc='mean'
+        )
+        
+        # Write to Excel
+        pivot_data.to_excel(writer, sheet_name='Growth Rates')
+        
+        # Get the worksheet
+        worksheet = writer.sheets['Growth Rates']
+        
+        # Add title
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+        
+        # Determine range based on number of years
+        years = sorted(growth_df['Year'].unique())
+        end_col = chr(ord('A') + len(years) + 1)
+        worksheet.merge_range(f'A1:{end_col}1', f"{self.market_type} Growth Rates by Country (%)", title_format)
+        
+        # Format the sheet
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1
+        })
+        
+        # Apply formats
+        worksheet.set_column('A:A', 20)  # ID column
+        worksheet.set_column('B:B', 25)  # Country name
+        worksheet.set_column(f'C:{end_col}', 15)  # Year columns
+    
+    def _add_region_sheet(self, workbook, writer, market_data: pd.DataFrame) -> None:
+        """
+        Add regional analysis sheet to Excel report
+        
+        Args:
+            workbook: Excel workbook
+            writer: Excel writer
+            market_data: DataFrame with market forecast data
+        """
+        # Check if regional data is available
+        if 'is_region' not in market_data.columns or market_data['is_region'].sum() == 0:
+            return
+        
+        # Filter for regions only
+        region_data = market_data[market_data['is_region'] == True].copy()
+        
+        # Create pivot table with years as columns
+        pivot_data = region_data.pivot_table(
+            index=['idGeo', 'Country'],
+            columns='Year',
+            values='Value',
+            aggfunc='sum'
+        )
+        
+        # Write to Excel
+        pivot_data.to_excel(writer, sheet_name='Regional Analysis')
+        
+        # Get the worksheet
+        worksheet = writer.sheets['Regional Analysis']
+        
+        # Add title
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+        
+        # Determine range based on number of years
+        years = sorted(region_data['Year'].unique())
+        end_col = chr(ord('A') + len(years) + 1)
+        worksheet.merge_range(f'A1:{end_col}1', f"{self.market_type} Regional Analysis", title_format)
+        
+        # Format the sheet
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1
+        })
+        
+        # Apply formats
+        worksheet.set_column('A:A', 20)  # ID column
+        worksheet.set_column('B:B', 25)  # Region name
+        worksheet.set_column(f'C:{end_col}', 15)  # Year columns
+    
+    def _add_causal_analysis_sheet(self, workbook, writer, market_data: pd.DataFrame) -> None:
+        """
+        Add causal analysis sheet to Excel report
+        
+        Args:
+            workbook: Excel workbook
+            writer: Excel writer
+            market_data: DataFrame with market forecast data
+        """
+        # Try to get causal strengths from indicator analyzer
+        try:
+            # Attempt to access causal integration via market analyzer
+            from src.market_analysis.market_analyzer import MarketAnalyzer
+            
+            # Try to get our parent MarketAnalyzer instance by looking at the caller chain
+            import inspect
+            frame = inspect.currentframe()
+            frames = inspect.getouterframes(frame)
+            
+            market_analyzer = None
+            for caller_frame in frames:
+                if 'self' in caller_frame.frame.f_locals:
+                    self_obj = caller_frame.frame.f_locals['self']
+                    if isinstance(self_obj, MarketAnalyzer):
+                        market_analyzer = self_obj
+                        break
+            
+            if market_analyzer and hasattr(market_analyzer, 'causal_integration'):
+                causal_strengths = market_analyzer.causal_integration.get_causal_strengths()
+            else:
+                # Fallback to trying to create our own instance
+                from src.indicators.causal_indicator_integration import CausalIndicatorIntegration
+                from src.indicators.indicator_analyzer import IndicatorAnalyzer
+                
+                indicator_analyzer = IndicatorAnalyzer(self.config_manager, self.data_loader)
+                causal_integration = CausalIndicatorIntegration(
+                    self.config_manager, self.data_loader, indicator_analyzer
+                )
+                
+                # See if we have pre-computed causal strengths
+                causal_strengths = causal_integration.get_causal_strengths()
+        except Exception as e:
+            logger.warning(f"Error accessing causal integration: {str(e)}")
+            return
+        
+        if not causal_strengths:
+            return
+        
+        # Create DataFrame for analysis
+        data = []
+        for ind_name, strength in causal_strengths.items():
+            data.append({
+                'Indicator': ind_name,
+                'Causal Strength': strength
+            })
+        
+        causal_df = pd.DataFrame(data)
+        
+        # Sort by causal strength
+        causal_df = causal_df.sort_values('Causal Strength', ascending=False)
+        
+        # Create the sheet
+        causal_df.to_excel(writer, sheet_name='Causal Analysis', index=False)
+        
+        # Get the worksheet
+        worksheet = writer.sheets['Causal Analysis']
+        
+        # Add title
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+        
+        worksheet.merge_range('A1:B1', f"{self.market_type} Causal Indicator Analysis", title_format)
+        
+        # Format the sheet
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D7E4BC',
+            'border': 1
+        })
+        
+        # Apply header format
+        worksheet.write(1, 0, 'Indicator', header_format)
+        worksheet.write(1, 1, 'Causal Strength', header_format)
+        
+        # Write the data
+        for i, (_, row) in enumerate(causal_df.iterrows()):
+            worksheet.write(i + 2, 0, row['Indicator'])
+            worksheet.write(i + 2, 1, row['Causal Strength'])
+        
+        # Set column widths
+        worksheet.set_column('A:A', 25)
+        worksheet.set_column('B:B', 15)
+        
+        # Add explanation of causal strength
+        row = len(causal_df) + 4
+        
+        explanation_format = workbook.add_format({
+            'text_wrap': True
+        })
+        
+        worksheet.merge_range(f'A{row}:B{row}', 'About Causal Strength:', header_format)
+        row += 1
+        
+        explanation = (
+            "Causal Strength measures the estimated causal impact of an indicator on market outcomes. "
+            "Unlike correlation, which only shows association, causal strength attempts to quantify "
+            "the actual influence an indicator has on market values. Values range from 0 (no causal effect) "
+            "to 1 (strong causal effect). This analysis combines multiple causal inference methods "
+            "including Granger causality tests, conditional independence tests, and feature importance "
+            "from machine learning models."
+        )
+        
+        worksheet.merge_range(f'A{row}:B{row+3}', explanation, explanation_format)
+    
+    def _format_value_axis(self, x, pos):
+        """Format value axis to show values in K, M, B"""
+        if x >= 1e9:
+            return f'{x/1e9:.1f}B'
+        elif x >= 1e6:
+            return f'{x/1e6:.1f}M'
+        elif x >= 1e3:
+            return f'{x/1e3:.1f}K'
+        else:
+            return f'{x:.1f}'
+    
+    def _replace_variables(self, text: str) -> str:
+        """
+        Replace variables in text with their values
+        
+        Args:
+            text: Text with variables to replace
             
         Returns:
-            Text with placeholders replaced
+            Text with variables replaced
         """
-        if not text:
-            return text
-        
-        # Replace market_type placeholder
+        # Replace ${market_type} with actual market type
         text = text.replace('${market_type}', self.market_type)
         
-        # Replace other project info placeholders
-        for key, value in self.project_info.items():
-            text = text.replace(f'${{{key}}}', str(value))
-        
-        return text 
+        return text

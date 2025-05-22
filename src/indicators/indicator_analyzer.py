@@ -274,6 +274,12 @@ class IndicatorAnalyzer:
                         merged_data['Value_indicator']
                     )
                     
+                    # Validate correlation and p-value
+                    if np.isnan(correlation) or np.isinf(correlation):
+                        correlation = 0.0
+                    if np.isnan(p_value) or np.isinf(p_value):
+                        p_value = 1.0
+                    
                     # Calculate both old and new weights
                     old_weight, new_weight = self._calculate_weight(correlation, p_value)
                     
@@ -281,6 +287,7 @@ class IndicatorAnalyzer:
                         'correlation': correlation,
                         'p_value': p_value,
                         'weight': new_weight,
+                        'old_weight': old_weight,  # Fixed: Add old_weight to results
                         'countries_covered': len(merged_data),
                         'data_completeness': len(merged_data) / len(country_year_data)
                     }
@@ -288,8 +295,10 @@ class IndicatorAnalyzer:
                 # Store results
                 results[indicator_name] = indicator_results
                 self.indicator_correlations[indicator_name] = indicator_results['correlation']
-                self.old_weights[indicator_name] = indicator_results.get('old_weight', old_weight)
-                self.new_weights[indicator_name] = indicator_results.get('weight', new_weight)
+                
+                # Fixed: Use get with fallback values to handle missing keys
+                self.old_weights[indicator_name] = indicator_results.get('old_weight', 0.0)
+                self.new_weights[indicator_name] = indicator_results.get('weight', 0.0)
                 
                 logger.info(f"Successfully processed {indicator_name}")
                 
@@ -511,10 +520,15 @@ class IndicatorAnalyzer:
                 # Apply adjustment
                 adjusted_df['market_share'] = adjusted_df['market_share'] * adjusted_df['score']
                 
-                # Normalize shares to sum to 100%
+                # Normalize shares to sum to 100% with safety checks
                 total_share = adjusted_df['market_share'].sum()
-                if total_share > 0:
+                if total_share > 0 and not np.isnan(total_share) and not np.isinf(total_share):
                     adjusted_df['market_share'] = adjusted_df['market_share'] / total_share * 100
+                else:
+                    logger.warning(f"Invalid total share {total_share}, keeping original shares")
+                    # Restore original shares if normalization fails
+                    if 'original_share' in adjusted_df.columns:
+                        adjusted_df['market_share'] = adjusted_df['original_share']
             
             # Apply score to value if it exists
             if 'Value' in adjusted_df.columns:
@@ -532,7 +546,18 @@ class IndicatorAnalyzer:
             for year in adjusted_df['Year'].unique():
                 # Create an adjustment score for each country in this year
                 year_df = adjusted_df[adjusted_df['Year'] == year].copy()
-                adjustment_scores = pd.DataFrame({id_col: year_df[id_col].unique()})
+                
+                # Fixed: Add empty DataFrame validation
+                if year_df.empty:
+                    logger.warning(f"No data found for year {year}, skipping")
+                    continue
+                
+                unique_countries = year_df[id_col].unique()
+                if len(unique_countries) == 0:
+                    logger.warning(f"No countries found for year {year}, skipping")
+                    continue
+                
+                adjustment_scores = pd.DataFrame({id_col: unique_countries})
                 adjustment_scores['score'] = 1.0  # Start with neutral score
                 adjustment_scores['Year'] = year  # Add Year column immediately
                 

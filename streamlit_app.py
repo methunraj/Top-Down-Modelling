@@ -40,6 +40,7 @@ from src.streamlit.distribution_interface import (
 from src.streamlit.visualization_interface import (
     render_visualization_interface
 )
+from src.streamlit.calibration_interface import render_calibration_interface
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, 
@@ -85,6 +86,7 @@ def sidebar_navigation():
         "Global Forecasting": "🌐 Global Forecasting",
         "Market Distribution": "🔄 Market Distribution",
         "Visualization": "📊 Visualization",
+        "Auto-Calibration": "🔄 Auto-Calibration",
         "Configuration": "⚙️ Configuration", 
         "Export": "📤 Export"
     }
@@ -127,6 +129,8 @@ def render_home_page():
     - Generate global market forecasts using multiple methods
     - Distribute global forecasts across countries using data-driven algorithms
     - Apply growth constraints and smoothing for realistic projections
+    - Utilize advanced techniques like causal inference and gradient harmonization
+    - Auto-calibrate models based on historical accuracy
     - Visualize market size, growth rates, and market share
     - Export results in multiple formats
     """)
@@ -160,8 +164,8 @@ def render_home_page():
     # Quick start - setup your forecast
     st.header("Quick Start")
 
-    # Three columns for main workflow steps
-    col1, col2, col3 = st.columns(3)
+    # Four columns for main workflow steps
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.subheader("1. Data Input")
@@ -186,7 +190,18 @@ def render_home_page():
             st.rerun()
     
     with col3:
-        st.subheader("3. View Results")
+        st.subheader("3. Auto-Calibrate")
+        st.markdown("""
+        - Evaluate forecast accuracy
+        - Auto-calibrate models
+        - Apply targeted adjustments
+        """)
+        if st.button("Go to Auto-Calibration"):
+            st.session_state.active_page = "Auto-Calibration"
+            st.rerun()
+    
+    with col4:
+        st.subheader("4. View Results")
         st.markdown("""
         - Visualize market data
         - Analyze growth patterns
@@ -201,7 +216,13 @@ def render_home_page():
         st.header("Project Overview")
         
         try:
-            project_info = st.session_state.config.get_project_info()
+            # Fixed: Handle both lambda function and direct project info access
+            if hasattr(st.session_state.config, 'get_project_info'):
+                project_info = st.session_state.config.get_project_info()
+            else:
+                # Handle direct project info storage
+                project_info = st.session_state.config if isinstance(st.session_state.config, dict) else {}
+            
             st.info(f"Project: {project_info.get('name', 'Unnamed Project')}")
             st.text(f"Market Type: {project_info.get('market_type', 'Unspecified')}")
             st.text(f"Version: {project_info.get('version', '1.0')}")
@@ -739,12 +760,31 @@ def render_market_distribution_page():
     
     # Run distribution
     if st.button("Run Market Distribution"):
-        # In a real implementation, this would call the MarketDistributor
-        # For now, just show a success message
-        st.success("Market distribution completed successfully!")
+        # Fixed: Add proper validation and processing
+        if st.session_state.global_forecast is None or st.session_state.country_historical is None:
+            st.error("Please ensure both global forecast and country historical data are loaded before running distribution.")
+            return
         
-        # Simulate having a result
-        st.session_state.distributed_market = st.session_state.country_historical
+        try:
+            with st.spinner("Running market distribution..."):
+                # In a real implementation, this would call the MarketDistributor
+                # For demonstration, we'll create a processed version of the data
+                distributed_result = st.session_state.country_historical.copy()
+                
+                # Add some basic validation and processing
+                if 'Year' not in distributed_result.columns or 'Value' not in distributed_result.columns:
+                    st.error("Country historical data must contain 'Year' and 'Value' columns")
+                    return
+                
+                # Simple processing example - ensure non-negative values
+                distributed_result['Value'] = distributed_result['Value'].clip(lower=0)
+                
+                st.session_state.distributed_market = distributed_result
+                st.success("Market distribution completed successfully!")
+                
+        except Exception as e:
+            st.error(f"Error during market distribution: {str(e)}")
+            return
         
         # Show a summary of the result
         st.header("Distribution Result Summary")
@@ -1100,17 +1140,22 @@ convergence_rate: 0.25
             "description": description
         }
         
-        # Store in session state
-        st.session_state.config = {
-            "get_project_info": lambda: project_info
-        }
+        # Fixed: Store project info directly instead of lambda function to avoid serialization issues
+        st.session_state.config = project_info
+        st.session_state.config_type = "project_info"
 
 # Export page
 def render_export_page():
     """Render the export page"""
-    from src.streamlit.export_handler import export_market_data, export_visualizations, export_report
-
     st.title("Export Results")
+    
+    # Fixed: Handle import errors gracefully
+    try:
+        from src.streamlit.export_handler import export_market_data, export_visualizations, export_report
+    except ImportError as e:
+        st.error(f"Export functionality not available: {e}")
+        st.info("Please ensure all required export modules are installed.")
+        return
 
     # Check if we have distributed market data
     if st.session_state.distributed_market is None:
@@ -1318,9 +1363,114 @@ def render_current_page():
         if forecast_config is not None and 'result' in forecast_config and forecast_config['result'] is not None:
             st.session_state.global_forecast = forecast_config['result']
     elif st.session_state.active_page == "Market Distribution":
-        distribution_config = render_distribution_interface(config_manager)
+        # Create market distributor if needed
+        if 'market_analyzer' not in st.session_state or st.session_state.market_analyzer is None:
+            try:
+                from src.market_analysis.market_analyzer import MarketAnalyzer
+                
+                # Get config path
+                config_path = getattr(st.session_state, 'config_path', None)
+                
+                # If we have a valid config path, use it to create MarketAnalyzer
+                if config_path and os.path.exists(config_path):
+                    market_analyzer = MarketAnalyzer(config_path)
+                    st.session_state.market_analyzer = market_analyzer
+                else:
+                    # Create a temporary config file from the current config_manager
+                    temp_config_path = 'config/temp_config.yaml'
+                    try:
+                        # Ensure the directory exists
+                        os.makedirs(os.path.dirname(temp_config_path), exist_ok=True)
+                        # Save current config to temp file
+                        if hasattr(config_manager, 'config'):
+                            config_manager.save_config(temp_config_path)
+                            # Create MarketAnalyzer with the temp config
+                            market_analyzer = MarketAnalyzer(temp_config_path)
+                            st.session_state.market_analyzer = market_analyzer
+                        else:
+                            st.error("No valid configuration available")
+                            market_analyzer = None
+                    except Exception as e:
+                        st.error(f"Error saving temporary configuration: {str(e)}")
+                        market_analyzer = None
+            except Exception as e:
+                st.error(f"Error creating market analyzer: {str(e)}")
+                market_analyzer = None
+        else:
+            market_analyzer = st.session_state.market_analyzer
+            
+        # Get market distributor from market analyzer
+        market_distributor = None
+        if market_analyzer and hasattr(market_analyzer, 'market_distributor'):
+            market_distributor = market_analyzer.market_distributor
+            
+        # Render distribution interface
+        distribution_config = render_distribution_interface(market_distributor, config_manager)
     elif st.session_state.active_page == "Visualization":
         render_visualization_interface(config_manager)
+    elif st.session_state.active_page == "Auto-Calibration":
+        # Create MarketAnalyzer instance if needed
+        if 'market_analyzer' not in st.session_state or st.session_state.market_analyzer is None:
+            try:
+                from src.market_analysis.market_analyzer import MarketAnalyzer
+                
+                # Get config path
+                config_path = getattr(st.session_state, 'config_path', None)
+                
+                # If we have a valid config path, use it to create MarketAnalyzer
+                if config_path and os.path.exists(config_path):
+                    market_analyzer = MarketAnalyzer(config_path)
+                    st.session_state.market_analyzer = market_analyzer
+                else:
+                    # Create a temporary config file from the current config_manager
+                    temp_config_path = 'config/temp_config.yaml'
+                    try:
+                        # Save current config to temp file
+                        if hasattr(config_manager, 'config'):
+                            # Ensure the directory exists
+                            os.makedirs(os.path.dirname(temp_config_path), exist_ok=True)
+                            config_manager.save_config(temp_config_path)
+                            
+                            # Create MarketAnalyzer with the temp config
+                            market_analyzer = MarketAnalyzer(temp_config_path)
+                            st.session_state.market_analyzer = market_analyzer
+                        else:
+                            st.error("No valid configuration available")
+                            market_analyzer = None
+                    except Exception as e:
+                        st.error(f"Error saving temporary configuration: {str(e)}")
+                        market_analyzer = None
+            except Exception as e:
+                st.error(f"Error creating market analyzer: {str(e)}")
+                market_analyzer = None
+        else:
+            market_analyzer = st.session_state.market_analyzer
+        
+        # Render calibration interface
+        calibration_config = render_calibration_interface(config_manager, market_analyzer)
+        
+        # Update configuration if returned
+        if calibration_config:
+            # Update market_distribution.calibration in config
+            current_config = config_manager.config if hasattr(config_manager, 'config') else {}
+            
+            # Ensure market_distribution key exists
+            if 'market_distribution' not in current_config:
+                current_config['market_distribution'] = {}
+            
+            # Update calibration settings
+            current_config['market_distribution']['calibration'] = calibration_config
+            
+            # Update config manager
+            config_manager.config = current_config
+            st.session_state.config_manager = config_manager
+            
+            # Save to file if path exists
+            if 'config_path' in st.session_state:
+                try:
+                    save_config_file(current_config, st.session_state.config_path)
+                except Exception as e:
+                    st.error(f"Error saving configuration: {str(e)}")
     elif st.session_state.active_page == "Configuration":
         # Get current configuration data
         if hasattr(config_manager, 'config'):

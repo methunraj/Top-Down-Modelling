@@ -15,7 +15,9 @@ import logging
 from src.config.config_manager import ConfigurationManager, create_default_config
 from src.data_processing.data_loader import DataLoader
 from src.indicators.indicator_analyzer import IndicatorAnalyzer
+from src.indicators.causal_indicator_integration import CausalIndicatorIntegration
 from src.distribution.market_distributor import MarketDistributor
+from src.global_forecasting.auto_calibration import AutoCalibrator
 from src.visualization.market_visualizer import MarketVisualizer
 
 # Configure logger
@@ -51,8 +53,10 @@ class MarketAnalyzer:
         # Initialize components
         self.data_loader = DataLoader(self.config_manager)
         self.indicator_analyzer = IndicatorAnalyzer(self.config_manager, self.data_loader)
+        self.causal_integration = CausalIndicatorIntegration(self.config_manager, self.data_loader, self.indicator_analyzer)
         self.market_distributor = MarketDistributor(self.config_manager, self.data_loader, self.indicator_analyzer)
         self.market_visualizer = MarketVisualizer(self.config_manager, self.data_loader)
+        self.auto_calibrator = AutoCalibrator(self.config_manager, self.data_loader)
         
         # Initialize results storage
         self.distributed_market = None
@@ -112,7 +116,18 @@ class MarketAnalyzer:
             
             # Analyze indicators
             logger.info("Analyzing market indicators")
-            self.indicator_analyzer.analyze_indicators()
+            indicator_analysis = self.indicator_analyzer.analyze_indicators()
+            
+            # Perform causal analysis if enabled
+            causal_enabled = self.config_manager.get_value('indicators.enable_causal_analysis', False)
+            if causal_enabled:
+                logger.info("Performing causal indicator analysis")
+                causal_analysis = self.causal_integration.analyze_causal_relationships()
+                
+                # Apply causal adjustments to market distribution if configured
+                apply_causal = self.config_manager.get_value('indicators.apply_causal_adjustments', False)
+                if apply_causal:
+                    self.market_distributor.set_causal_integration(self.causal_integration)
             
             # Distribute market values
             logger.info("Distributing market values")
@@ -133,6 +148,12 @@ class MarketAnalyzer:
                         self.distributed_market.loc[year_mask, 'market_share'] = (
                             self.distributed_market.loc[year_mask, 'market_value'] / year_total * 100
                         )
+            
+            # Apply auto-calibration if enabled
+            auto_calibration_enabled = self.config_manager.get_value('market_distribution.calibration.enabled', False)
+            if auto_calibration_enabled:
+                logger.info("Applying auto-calibration to market forecast")
+                self.distributed_market = self.auto_calibrator.apply_auto_calibration(self.distributed_market)
             
             logger.info("Market analysis completed successfully")
             return self.distributed_market
@@ -273,22 +294,37 @@ class MarketAnalyzer:
         try:
             df = self.distributed_market
             
+            # Fixed: Get value column name from configuration
+            value_column = self.config_manager.get_column_mapping('global_forecast').get('value_column', 'Value')
+            
+            # Validate that the value column exists
+            if value_column not in df.columns:
+                logger.warning(f"Value column '{value_column}' not found in data, using 'Value' as fallback")
+                value_column = 'Value'
+                if value_column not in df.columns:
+                    logger.error("Neither configured value column nor 'Value' column found in data")
+                    return {}
+            
             # Get years
             years = sorted(df['Year'].unique())
             first_year = min(years)
             last_year = max(years)
             
-            # Get global values for first and last year
-            first_year_total = df[df['Year'] == first_year]['Value'].sum()
-            last_year_total = df[df['Year'] == last_year]['Value'].sum()
+            # Get global values for first and last year - Fixed to use dynamic column name
+            first_year_total = df[df['Year'] == first_year][value_column].sum()
+            last_year_total = df[df['Year'] == last_year][value_column].sum()
             
-            # Calculate global CAGR
+            # Calculate global CAGR - Fixed division by zero protection
             years_diff = last_year - first_year
-            global_cagr = (last_year_total / first_year_total) ** (1 / years_diff) - 1
+            if years_diff > 0 and first_year_total > 0:
+                global_cagr = (last_year_total / first_year_total) ** (1 / years_diff) - 1
+            else:
+                logger.warning(f"Cannot calculate CAGR: years_diff={years_diff}, first_year_total={first_year_total}")
+                global_cagr = 0.0
             
-            # Get top 5 countries in the final year
+            # Get top 5 countries in the final year - Fixed to use dynamic column name
             last_year_data = df[df['Year'] == last_year].copy()
-            top_countries = last_year_data.sort_values(by='Value', ascending=False).head(5)
+            top_countries = last_year_data.sort_values(by=value_column, ascending=False).head(5)
             
             # Create country statistics
             country_stats = []
@@ -296,20 +332,21 @@ class MarketAnalyzer:
                 country_id = row['idGeo']
                 country_name = row['Country']
                 
-                # Get first year value for this country
-                first_value = df[(df['Year'] == first_year) & (df['idGeo'] == country_id)]['Value'].values
+                # Get first year value for this country - Fixed to use dynamic column name
+                first_value = df[(df['Year'] == first_year) & (df['idGeo'] == country_id)][value_column].values
                 
-                if len(first_value) > 0:
-                    # Calculate country CAGR
-                    country_cagr = (row['Value'] / first_value[0]) ** (1 / years_diff) - 1
+                if len(first_value) > 0 and first_value[0] > 0 and years_diff > 0:
+                    # Calculate country CAGR - Fixed division by zero protection
+                    country_cagr = (row[value_column] / first_value[0]) ** (1 / years_diff) - 1
                 else:
+                    logger.warning(f"Cannot calculate CAGR for country {country_name}: first_value={first_value}, years_diff={years_diff}")
                     country_cagr = None
                 
                 country_stats.append({
                     'id': country_id,
                     'name': country_name,
-                    'final_value': row['Value'],
-                    'final_share': row['Value'] / last_year_total * 100,
+                    'final_value': row[value_column],
+                    'final_share': row[value_column] / last_year_total * 100,
                     'cagr': country_cagr * 100 if country_cagr is not None else None
                 })
             
@@ -477,6 +514,122 @@ class MarketAnalyzer:
         except Exception as e:
             logger.error(f"Error saving wide format: {str(e)}")
             return ""
+            
+    def evaluate_forecast_accuracy(self, historical_data: Optional[pd.DataFrame] = None, 
+                               actual_data: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+        """
+        Evaluate the accuracy of the current forecast against actual data
+        
+        Args:
+            historical_data: Optional historical market data used for forecasting
+            actual_data: Optional actual market data to compare against forecast
+            
+        Returns:
+            Dictionary with accuracy metrics
+        """
+        if self.distributed_market is None:
+            logger.warning("No forecast available for evaluation")
+            return {}
+        
+        logger.info("Evaluating forecast accuracy")
+        
+        # If historical data not provided, load from data_loader
+        if historical_data is None:
+            try:
+                historical_data = self.data_loader.load_country_historical()
+                logger.info(f"Loaded historical data with {len(historical_data)} records")
+            except Exception as e:
+                logger.warning(f"Could not load historical data: {str(e)}")
+                historical_data = pd.DataFrame()
+        
+        # Use auto_calibrator to evaluate forecast accuracy
+        metrics = self.auto_calibrator.evaluate_forecast_accuracy(
+            historical_data=historical_data,
+            forecast_data=self.distributed_market,
+            actual_data=actual_data
+        )
+        
+        return metrics
+    
+    def calibrate_models(self) -> Dict[str, Any]:
+        """
+        Perform auto-calibration of forecasting models based on accuracy evaluation
+        
+        Returns:
+            Dictionary with calibration changes
+        """
+        # Check if auto-calibration is enabled
+        calibration_enabled = self.config_manager.get_value('market_distribution.calibration.enabled', False)
+        
+        if not calibration_enabled:
+            logger.info("Auto-calibration is disabled in configuration")
+            return {}
+        
+        if not hasattr(self, 'auto_calibrator'):
+            logger.warning("Auto-calibrator component not initialized")
+            return {}
+        
+        logger.info("Performing model auto-calibration")
+        
+        # Use auto_calibrator to calibrate models
+        calibration_report = self.auto_calibrator.calibrate_models(market_analyzer=self)
+        
+        # Log calibration results
+        if calibration_report:
+            confidence = calibration_report.get('confidence_score', 0)
+            approach = calibration_report.get('approach', 'unknown')
+            
+            logger.info(f"Auto-calibration complete with confidence score: {confidence:.2f}")
+            logger.info(f"Used {approach} calibration approach")
+            
+            # Log parameter changes
+            param_changes = calibration_report.get('parameter_changes', {})
+            if param_changes:
+                for component, changes in param_changes.items():
+                    logger.info(f"Applied calibration to {component} component")
+        
+        return calibration_report
+    
+    def save_calibration_model(self, file_path: Optional[str] = None) -> str:
+        """
+        Save the current calibration model to a file
+        
+        Args:
+            file_path: Optional path to save the model file
+            
+        Returns:
+            Path to the saved model file
+        """
+        if not hasattr(self, 'auto_calibrator'):
+            logger.warning("Auto-calibrator component not initialized")
+            return ""
+        
+        return self.auto_calibrator.save_calibration_model(file_path)
+    
+    def load_calibration_model(self, file_path: str) -> bool:
+        """
+        Load a calibration model from a file
+        
+        Args:
+            file_path: Path to the model file
+            
+        Returns:
+            Boolean indicating success
+        """
+        # Fixed: Add validation for auto_calibrator existence and method availability
+        if not hasattr(self, 'auto_calibrator') or self.auto_calibrator is None:
+            logger.warning("Auto-calibrator component not initialized")
+            return False
+        
+        if not hasattr(self.auto_calibrator, 'load_calibration_model'):
+            logger.warning("Auto-calibrator does not support loading calibration models")
+            return False
+        
+        try:
+            return self.auto_calibrator.load_calibration_model(file_path)
+        except Exception as e:
+            logger.error(f"Error loading calibration model: {e}")
+            return False
 
 
 def create_market_analyzer(config_path: Optional[str] = None) -> MarketAnalyzer:

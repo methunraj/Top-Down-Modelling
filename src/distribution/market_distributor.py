@@ -10,6 +10,8 @@ import numpy as np
 from typing import Dict, List, Any, Optional, Union, Tuple
 import logging
 from sklearn.cluster import KMeans
+from src.distribution.regional_aggregator import RegionalAggregator
+from src.distribution.gradient_harmonization import GradientHarmonizer
 
 # Configure logger
 logging.basicConfig(level=logging.INFO, 
@@ -37,6 +39,7 @@ class MarketDistributor:
         self.config_manager = config_manager
         self.data_loader = data_loader
         self.indicator_analyzer = indicator_analyzer
+        self.causal_integration = None
         
         # Get market distribution settings
         self.distribution_settings = self.config_manager.get_market_distribution_settings()
@@ -44,6 +47,45 @@ class MarketDistributor:
         # Initialize dynamic tier classification
         self.tiers = None
         self.tier_thresholds = None
+        
+        # Initialize regional aggregator
+        self.regional_aggregator = RegionalAggregator(config_manager)
+        
+        # Initialize gradient harmonizer
+        self.gradient_harmonizer = GradientHarmonizer(config_manager)
+        
+        # Load region definitions from provided hierarchy definition if available
+        region_definitions = self.config_manager.get_region_definitions()
+        region_metadata = self.config_manager.get_region_metadata()
+        
+        if region_definitions:
+            logger.info(f"Loaded {len(region_definitions)} region definitions from configuration")
+            self.regional_aggregator.set_hierarchy_definition(region_definitions, region_metadata)
+    
+    def update_settings(self, settings: Dict[str, Any]) -> None:
+        """
+        Update distribution settings with new values
+        
+        Args:
+            settings: Dictionary containing updated settings
+        """
+        logger.info("Updating market distribution settings")
+        
+        # Update distribution settings
+        if settings:
+            self.distribution_settings.update(settings)
+            
+            # If settings include tier-related changes, reset tiers
+            if any(key in settings for key in ['tier_determination', 'manual_tiers', 'kmeans_params']):
+                logger.info("Resetting tier classification due to settings update")
+                self.tiers = None
+                self.tier_thresholds = None
+            
+            # Update gradient harmonization settings if needed
+            if 'smoothing' in settings and hasattr(self, 'gradient_harmonizer'):
+                self.gradient_harmonizer.update_settings(settings.get('smoothing', {}))
+            
+            logger.info("Market distribution settings updated successfully")
     
     def distribute_market(self) -> pd.DataFrame:
         """
@@ -72,7 +114,10 @@ class MarketDistributor:
         
         # CRITICAL CHANGE: If redistribution_start_year is set, we'll process data in two completely separate paths
         if redistribution_start_year is not None:
-            logger.info(f"Using redistribution_start_year={redistribution_start_year}. Processing data in two separate paths.")
+            logger.info(f"Using redistribution_start_year={redistribution_start_year}. Processing data in two separate paths. "
+                       f"Global forecast: {global_forecast.shape[0]} rows, "
+                       f"Country historical: {country_historical.shape[0]} rows, "
+                       f"Indicators: {len(indicators) if indicators else 0}")
             
             # Path 1: Preserve historical data exactly as is (before redistribution_start_year)
             preserved_historical = country_historical[country_historical['Year'] < redistribution_start_year].copy()
@@ -121,6 +166,11 @@ class MarketDistributor:
             # Apply indicator adjustments
             if self.indicator_analyzer:
                 projected_shares = self.indicator_analyzer.apply_indicator_adjustments(projected_shares)
+                
+            # Apply causal indicator adjustments if enabled
+            if self.causal_integration:
+                logger.info("Applying causal indicator adjustments to projected shares")
+                projected_shares = self.causal_integration.apply_causal_adjustments(projected_shares)
             
             # Apply growth constraints
             growth_constrained_shares = self._apply_growth_constraints(projected_shares, historical_shares, id_col)
@@ -141,6 +191,19 @@ class MarketDistributor:
                 final_result = final_result.sort_values(by=[id_col, 'Year'])
             else:
                 final_result = smoothed_market
+            
+            # Apply regional aggregation if enabled
+            if self.distribution_settings.get('enable_regional_aggregation', True):
+                # Perform hierarchical regional aggregation
+                final_result = self.regional_aggregator.aggregate_hierarchical(
+                    final_result, id_col=id_col, country_col=country_col, value_col='Value'
+                )
+                
+                # Enforce regional consistency
+                final_result = self.regional_aggregator.enforce_regional_consistency(
+                    final_result, id_col=id_col, country_col=country_col, value_col='Value', 
+                    method=self.distribution_settings.get('regional_consistency_method', 'hybrid')
+                )
             
             return final_result
             
@@ -176,6 +239,11 @@ class MarketDistributor:
             # Apply indicator adjustments to projected shares if indicators are available
             if self.indicator_analyzer:
                 projected_shares = self.indicator_analyzer.apply_indicator_adjustments(projected_shares)
+                
+            # Apply causal indicator adjustments if enabled
+            if self.causal_integration:
+                logger.info("Applying causal indicator adjustments to projected shares")
+                projected_shares = self.causal_integration.apply_causal_adjustments(projected_shares)
             
             # Apply growth constraints based on market dynamics
             growth_constrained_shares = self._apply_growth_constraints(projected_shares, historical_shares, id_col)
@@ -188,6 +256,19 @@ class MarketDistributor:
             
             # Apply smoothing to ensure realistic growth patterns
             smoothed_market = self._apply_smoothing(distributed_market)
+            
+            # Apply regional aggregation if enabled
+            if self.distribution_settings.get('enable_regional_aggregation', True):
+                # Perform hierarchical regional aggregation
+                smoothed_market = self.regional_aggregator.aggregate_hierarchical(
+                    smoothed_market, id_col=id_col, country_col=country_col, value_col='Value'
+                )
+                
+                # Enforce regional consistency
+                smoothed_market = self.regional_aggregator.enforce_regional_consistency(
+                    smoothed_market, id_col=id_col, country_col=country_col, value_col='Value',
+                    method=self.distribution_settings.get('regional_consistency_method', 'hybrid')
+                )
             
             return smoothed_market
     
@@ -219,7 +300,16 @@ class MarketDistributor:
             total_market = year_data['Value'].sum()
             
             if total_market <= 0:
-                logger.warning(f"Total market size for year {year} is zero or negative")
+                logger.warning(f"Total market size for year {year} is zero or negative ({total_market})")
+                # Instead of skipping, handle gracefully to maintain data integrity
+                if len(year_data) > 0:
+                    # Apply equal market share distribution to maintain mathematical consistency
+                    logger.info(f"Applying equal distribution for year {year} with {len(year_data)} countries")
+                    year_data['market_share'] = 100.0 / len(year_data)
+                    year_data['Value'] = 0.0  # Set values to zero but maintain shares
+                    shares_list.append(year_data[[id_col, country_col, 'Year', 'Value', 'market_share']])
+                else:
+                    logger.error(f"No country data available for year {year} - this will cause time series gaps")
                 continue
             
             # Calculate market share for each country
@@ -253,14 +343,23 @@ class MarketDistributor:
         # Determine optimal number of clusters using silhouette score
         from sklearn.metrics import silhouette_score
         
-        max_clusters = min(8, len(shares) - 1)  # At most 8 tiers, and must be less than number of countries
-        max_clusters = max(3, max_clusters)  # At least 3 tiers
+        max_clusters = min(8, len(shares))  # At most 8 tiers, and can't exceed number of countries
+        min_clusters = min(3, len(shares))  # At least 3 tiers, but not more than available countries
+        max_clusters = max(min_clusters, max_clusters)  # Ensure max >= min
         
         best_score = -1
-        best_n_clusters = 3  # Default to 3 clusters
+        best_n_clusters = min_clusters  # Default to minimum viable clusters
+        
+        # Handle edge case: only one country
+        if len(shares) == 1:
+            latest_data['tier'] = 0
+            self.tiers = {0: [latest_data.iloc[0][id_col]]}
+            self.tier_thresholds = [latest_data.iloc[0]['market_share'], 0.01]
+            logger.info(f"Single country case: assigned to tier 0")
+            return
         
         # Try different numbers of clusters
-        for n_clusters in range(3, max_clusters + 1):
+        for n_clusters in range(min_clusters, max_clusters + 1):
             try:
                 kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
                 cluster_labels = kmeans.fit_predict(shares)
@@ -289,23 +388,41 @@ class MarketDistributor:
         # Apply remapping
         latest_data['tier'] = latest_data['tier'].map(tier_remap)
         
-        # Calculate tier thresholds
+        # Calculate tier thresholds with improved logic
         self.tier_thresholds = []
         
         for tier in range(best_n_clusters):
             tier_data = latest_data[latest_data['tier'] == tier]
             
+            if tier_data.empty:
+                # Handle empty tier case
+                if tier == 0:
+                    threshold = latest_data['market_share'].max() * 0.8
+                else:
+                    threshold = self.tier_thresholds[-1] * 0.5 if self.tier_thresholds else 0.1
+                self.tier_thresholds.append(threshold)
+                continue
+            
             # Find minimum share in this tier
             min_share = tier_data['market_share'].min()
+            max_share = tier_data['market_share'].max()
             
-            # For highest tier (0), use the minimum share as threshold
-            # For other tiers, use the average of this tier's min and next tier's max
-            if tier < best_n_clusters - 1:
+            # Improved threshold calculation
+            if tier == 0:
+                # For highest tier, use minimum share in tier
+                threshold = min_share
+            elif tier < best_n_clusters - 1:
+                # For middle tiers, use geometric mean between this tier's min and next tier's max
                 next_tier_data = latest_data[latest_data['tier'] == tier + 1]
-                next_tier_max = next_tier_data['market_share'].max()
-                threshold = (min_share + next_tier_max) / 2
+                if not next_tier_data.empty:
+                    next_tier_max = next_tier_data['market_share'].max()
+                    # Use geometric mean to avoid unrealistic thresholds
+                    threshold = np.sqrt(min_share * next_tier_max)
+                else:
+                    threshold = min_share * 0.5
             else:
-                threshold = min_share / 2  # For lowest tier, use half of its minimum
+                # For lowest tier, ensure reasonable minimum threshold
+                threshold = max(min_share * 0.3, 0.01)  # At least 0.01% market share
             
             self.tier_thresholds.append(threshold)
         
@@ -438,16 +555,53 @@ class MarketDistributor:
                 # Apply constrained trend
                 year_projection.loc[tier_mask, 'market_share'] = year_projection.loc[tier_mask, 'market_share'] * constrained_trend
             
-            # Normalize shares to sum to 100%
+            # Validate market shares before normalization
             total_share = year_projection['market_share'].sum()
-            if total_share > 0:
+            
+            # Check for mathematical consistency before normalization
+            share_deviation = abs(total_share - 100.0)
+            if share_deviation > 10.0:  # More than 10% deviation warrants investigation
+                logger.warning(f"Year {year}: Market shares sum to {total_share:.2f}% (deviation: {share_deviation:.2f}%)")
+            
+            # Check for invalid individual shares
+            invalid_shares = year_projection['market_share'].isna() | (year_projection['market_share'] < 0)
+            if invalid_shares.any():
+                invalid_countries = year_projection[invalid_shares]['Country'].tolist()
+                logger.error(f"Year {year}: Invalid market shares for countries: {invalid_countries}")
+                # Set invalid shares to 0 before normalization
+                year_projection.loc[invalid_shares, 'market_share'] = 0.0
+                total_share = year_projection['market_share'].sum()
+            
+            # Normalize shares to sum to 100% with enhanced safety checks
+            if total_share > 0 and not np.isnan(total_share) and not np.isinf(total_share):
+                # Store original shares for validation
+                original_shares = year_projection['market_share'].copy()
                 year_projection['market_share'] = year_projection['market_share'] / total_share * 100
+                
+                # Validate normalization didn't introduce errors
+                new_total = year_projection['market_share'].sum()
+                if abs(new_total - 100.0) > 0.01:  # 0.01% tolerance for floating point
+                    logger.error(f"Year {year}: Normalization failed, total after normalization: {new_total:.6f}%")
+            else:
+                # Enhanced fallback with equal distribution
+                logger.warning(f"Year {year}: Invalid total share {total_share}, applying equal distribution")
+                n_countries = len(year_projection)
+                if n_countries > 0:
+                    year_projection['market_share'] = 100.0 / n_countries
+                    logger.info(f"Year {year}: Applied equal distribution of {100.0/n_countries:.4f}% to {n_countries} countries")
+                else:
+                    logger.error(f"Year {year}: No countries found for distribution - cannot apply equal distribution")
+                    # Create a placeholder entry to maintain data integrity
+                    continue
             
             # Add to results
             projected_shares_list.append(year_projection)
         
         # Combine all forecast years
         projected_shares = pd.concat(projected_shares_list, ignore_index=True)
+        
+        # Critical: Validate mathematical consistency after projection
+        self._validate_market_share_consistency(projected_shares, "after market share projection")
         
         # Keep relevant columns
         relevant_cols = [id_col, country_col, 'Year', 'market_share', 'tier']
@@ -506,15 +660,31 @@ class MarketDistributor:
                 })
                 continue
             
-            # Calculate weighted average of share changes (more recent years have higher weight)
+            # Calculate weighted average of share changes with improved logic
             weights = np.linspace(0.5, 1.0, len(country_data))
-            weighted_avg_change = np.average(country_data['share_change'], weights=weights)
             
-            # Apply dampening to extreme trends
+            # Remove outliers and invalid values before calculating average
+            valid_changes = country_data['share_change']
+            valid_changes = valid_changes[np.isfinite(valid_changes)]  # Remove NaN and inf
+            valid_changes = valid_changes[(valid_changes > 0.1) & (valid_changes < 10.0)]  # Remove extreme outliers
+            
+            if len(valid_changes) == 0:
+                # No valid changes, use neutral trend
+                weighted_avg_change = 1.0
+            else:
+                # Recalculate weights for valid data only
+                weights = weights[-len(valid_changes):]
+                weighted_avg_change = np.average(valid_changes, weights=weights)
+            
+            # Apply more conservative dampening to extreme trends
             if weighted_avg_change > 1.0:
-                dampened_change = 1.0 + (weighted_avg_change - 1.0) * 0.7
+                # Limit growth trends more aggressively
+                dampened_change = 1.0 + (weighted_avg_change - 1.0) * 0.5
+                dampened_change = min(dampened_change, 1.3)  # Max 30% annual growth
             elif weighted_avg_change < 1.0:
-                dampened_change = 1.0 - (1.0 - weighted_avg_change) * 0.7
+                # Limit decline trends more conservatively
+                dampened_change = 1.0 - (1.0 - weighted_avg_change) * 0.5
+                dampened_change = max(dampened_change, 0.8)  # Max 20% annual decline
             else:
                 dampened_change = 1.0
             
@@ -654,6 +824,13 @@ class MarketDistributor:
                     # Apply constraints
                     current_growth = row['growth_rate']
                     
+                    # Fixed: Handle invalid market_share_prev without skipping countries
+                    if pd.isna(row['market_share_prev']) or row['market_share_prev'] <= 0:
+                        logger.warning(f"Invalid market_share_prev for country {row.get(id_col, 'unknown')}: {row['market_share_prev']}, using minimal share")
+                        # Assign minimal share instead of skipping to maintain mathematical consistency
+                        merged.loc[i, 'market_share_prev'] = 0.01  # 0.01% minimal share
+                        row = merged.loc[i]  # Update row with corrected value
+                    
                     if current_growth > max_growth:
                         # Constrain growth rate
                         new_share = row['market_share_prev'] * (1 + max_growth / 100)
@@ -695,6 +872,85 @@ class MarketDistributor:
         constrained_shares = pd.concat(constrained_shares_list, ignore_index=True)
         
         return constrained_shares
+    
+    def _validate_market_share_consistency(self, data: pd.DataFrame, context: str = "") -> None:
+        """
+        Validate mathematical consistency of market shares.
+        
+        Args:
+            data: DataFrame with market share data
+            context: Description of when this validation is being performed
+        """
+        if data.empty:
+            logger.warning(f"Market share validation ({context}): No data to validate")
+            return
+        
+        # Check each year separately
+        years = data['Year'].unique()
+        for year in years:
+            year_data = data[data['Year'] == year]
+            total_share = year_data['market_share'].sum()
+            
+            # Check sum consistency (should be 100%)
+            deviation = abs(total_share - 100.0)
+            if deviation > 0.01:  # 0.01% tolerance
+                if deviation > 1.0:  # More than 1% is critical
+                    logger.error(f"CRITICAL: Market shares for year {year} sum to {total_share:.4f}% "
+                               f"(deviation: {deviation:.4f}%) - {context}")
+                else:
+                    logger.warning(f"Market shares for year {year} sum to {total_share:.4f}% "
+                                 f"(deviation: {deviation:.4f}%) - {context}")
+            
+            # Check for invalid individual shares
+            invalid_shares = (year_data['market_share'] < 0) | year_data['market_share'].isna()
+            if invalid_shares.any():
+                invalid_count = invalid_shares.sum()
+                logger.error(f"Year {year}: {invalid_count} countries have invalid market shares - {context}")
+            
+            # Check for unrealistic shares (>50% for any single country might be suspicious)
+            high_shares = year_data['market_share'] > 50.0
+            if high_shares.any():
+                high_countries = year_data[high_shares]['Country'].tolist()
+                logger.info(f"Year {year}: Countries with >50% market share: {high_countries} - {context}")
+    
+    def _validate_global_consistency(self, country_data: pd.DataFrame, global_forecast: pd.DataFrame, 
+                                   year: int, context: str = "") -> None:
+        """
+        Validate that country-level values sum to global forecast values.
+        
+        Args:
+            country_data: DataFrame with country-level data
+            global_forecast: DataFrame with global forecast data
+            year: Year to validate
+            context: Description of validation context
+        """
+        if country_data.empty or global_forecast.empty:
+            logger.warning(f"Global consistency validation ({context}): Missing data for year {year}")
+            return
+        
+        # Get global value for the year
+        global_year_data = global_forecast[global_forecast['Year'] == year]
+        if global_year_data.empty:
+            logger.warning(f"No global forecast data for year {year} - {context}")
+            return
+        
+        global_value = global_year_data['Value'].iloc[0]
+        
+        # Sum country values
+        country_total = country_data['Value'].sum()
+        
+        # Check consistency
+        deviation_abs = abs(country_total - global_value)
+        deviation_pct = (deviation_abs / global_value * 100) if global_value > 0 else float('inf')
+        
+        if deviation_pct > 1.0:  # More than 1% deviation
+            logger.error(f"CRITICAL: Year {year} - Country values sum to {country_total:,.0f}, "
+                        f"global forecast is {global_value:,.0f} "
+                        f"(deviation: {deviation_pct:.2f}%) - {context}")
+        elif deviation_pct > 0.1:  # More than 0.1% deviation
+            logger.warning(f"Year {year} - Country values sum to {country_total:,.0f}, "
+                         f"global forecast is {global_value:,.0f} "
+                         f"(deviation: {deviation_pct:.2f}%) - {context}")
     
     def _calculate_dynamic_growth_constraints(self, historical_shares: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -765,6 +1021,16 @@ class MarketDistributor:
             'apply_scaling': True
         }
     
+    def set_causal_integration(self, causal_integration) -> None:
+        """
+        Set the causal integration component for enhanced indicator analysis
+        
+        Args:
+            causal_integration: CausalIndicatorIntegration instance
+        """
+        self.causal_integration = causal_integration
+        logger.info("Causal indicator integration enabled for market distribution")
+    
     def _calculate_distributed_values(self, combined_shares: pd.DataFrame,
                                      global_forecast: pd.DataFrame,
                                      global_year_col: str,
@@ -805,9 +1071,31 @@ class MarketDistributor:
             
             global_value = global_values[year]
             year_mask = result_df['Year'] == year
+            year_data = result_df[year_mask]
+            
+            # CRITICAL: Validate market shares before calculating values
+            total_share = year_data['market_share'].sum()
+            if abs(total_share - 100.0) > 0.01:  # More than 0.01% deviation
+                logger.error(f"CRITICAL: Year {year} market shares sum to {total_share:.4f}% before value calculation")
+                # Normalize to ensure mathematical consistency
+                if total_share > 0:
+                    result_df.loc[year_mask, 'market_share'] = result_df.loc[year_mask, 'market_share'] / total_share * 100
+                    logger.info(f"Year {year}: Normalized market shares to sum to 100%")
             
             # Calculate absolute value based on market share
             result_df.loc[year_mask, 'Value'] = result_df.loc[year_mask, 'market_share'] * global_value / 100
+            
+            # CRITICAL: Validate that values sum to global forecast
+            calculated_total = result_df.loc[year_mask, 'Value'].sum()
+            deviation_pct = abs(calculated_total - global_value) / global_value * 100
+            if deviation_pct > 0.01:  # More than 0.01% deviation
+                logger.error(f"CRITICAL: Year {year} calculated values sum to {calculated_total:,.0f}, "
+                           f"should be {global_value:,.0f} (deviation: {deviation_pct:.4f}%)")
+                # Force exact alignment
+                if calculated_total > 0:
+                    scaling_factor = global_value / calculated_total
+                    result_df.loc[year_mask, 'Value'] = result_df.loc[year_mask, 'Value'] * scaling_factor
+                    logger.info(f"Year {year}: Applied scaling factor {scaling_factor:.6f} to ensure global consistency")
         
         return result_df
     
@@ -821,6 +1109,28 @@ class MarketDistributor:
         Returns:
             DataFrame with smoothed market values
         """
+        # Check if gradient harmonization is enabled
+        use_gradient_harmonization = self.distribution_settings.get('use_gradient_harmonization', True)
+        
+        if use_gradient_harmonization:
+            # Use the advanced Gradient Harmonization Algorithm
+            logger.info("Applying Gradient Harmonization Algorithm for trajectory smoothing")
+            
+            # Mark forecast vs historical data if not already marked
+            if 'is_forecast' not in distributed_market.columns:
+                # Attempt to infer from type column if available
+                if 'Type' in distributed_market.columns:
+                    distributed_market['is_forecast'] = distributed_market['Type'] == 'Forecast'
+                else:
+                    # Can't determine, algorithm will infer from data patterns
+                    pass
+            
+            # Apply the gradient harmonization
+            return self.gradient_harmonizer.harmonize_market_trajectories(distributed_market)
+        
+        # Fall back to the original smoothing method if gradient harmonization is disabled
+        logger.info("Using legacy smoothing method (gradient harmonization disabled)")
+        
         # Create a copy to avoid modifying the original
         smoothed_df = distributed_market.copy()
         
@@ -959,6 +1269,9 @@ class MarketDistributor:
                     smoothed_df.loc[year_mask, 'market_share'] = (
                         smoothed_df.loc[year_mask, 'Value'] / year_total * 100
                     )
+        
+        # CRITICAL: Final validation of mathematical consistency
+        self._validate_market_share_consistency(smoothed_df, "after gradient harmonization and smoothing")
         
         # Recalculate growth rates with final values
         for country_id in countries:

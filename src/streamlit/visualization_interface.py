@@ -795,6 +795,10 @@ def render_regional_analysis(distributed_market: pd.DataFrame, config_manager: C
             
             with col1:
                 region_name = st.text_input("Region Name", value="New Region")
+                # Enhanced: Add input validation for region name
+                if region_name and not region_name.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+                    st.warning("Region name should only contain letters, numbers, spaces, hyphens, and underscores")
+                    region_name = ""
             
             with col2:
                 region_countries = st.multiselect(
@@ -1201,6 +1205,10 @@ def render_data_table(distributed_market: pd.DataFrame, config_manager: Configur
             value="market_data_export",
             key="table_filename"
         )
+        # Enhanced: Add input validation for file name
+        if file_name and not file_name.replace("_", "").replace("-", "").isalnum():
+            st.warning("File name should only contain letters, numbers, hyphens, and underscores")
+            file_name = "market_data_export"
     
     # Download button
     if st.button("Download Data", key="download_data_button"):
@@ -1242,6 +1250,253 @@ def render_data_table(distributed_market: pd.DataFrame, config_manager: Configur
             st.error(f"Error preparing download: {str(e)}")
 
 
+def render_calibration_metrics(distributed_market: pd.DataFrame, config_manager: ConfigurationManager) -> None:
+    """
+    Render calibration metrics visualization.
+    
+    Args:
+        distributed_market: DataFrame with distributed market data
+        config_manager: ConfigurationManager instance
+    """
+    st.header("Forecast Calibration Metrics")
+    
+    # Check if we have a market analyzer available
+    if 'market_analyzer' not in st.session_state or st.session_state.market_analyzer is None:
+        st.info("No calibration metrics available. Go to the Auto-Calibration page to evaluate and calibrate your models.")
+        
+        if st.button("Go to Auto-Calibration"):
+            st.session_state.active_page = "Auto-Calibration"
+            st.rerun()
+        
+        return
+    
+    # Get market analyzer
+    market_analyzer = st.session_state.market_analyzer
+    
+    # Check if we have calibration metrics
+    if not hasattr(market_analyzer, 'auto_calibrator') or not hasattr(market_analyzer.auto_calibrator, 'calibration_history'):
+        st.info("No calibration metrics available. Go to the Auto-Calibration page to evaluate and calibrate your models.")
+        
+        if st.button("Go to Auto-Calibration"):
+            st.session_state.active_page = "Auto-Calibration"
+            st.rerun()
+        
+        return
+    
+    # Get calibration history
+    calibration_history = market_analyzer.auto_calibrator.calibration_history
+    
+    if not calibration_history:
+        st.info("No calibration history available. Go to the Auto-Calibration page to evaluate and calibrate your models.")
+        
+        if st.button("Go to Auto-Calibration"):
+            st.session_state.active_page = "Auto-Calibration"
+            st.rerun()
+        
+        return
+    
+    # Display calibration metrics
+    st.subheader("Forecast Accuracy Metrics")
+    
+    # Extract metrics from calibration history
+    latest_calibration = calibration_history[-1]
+    
+    if 'metrics' in latest_calibration and 'overall' in latest_calibration['metrics']:
+        overall_metrics = latest_calibration['metrics']['overall']
+        
+        # Display metrics as cards
+        metric_cols = st.columns(len(overall_metrics))
+        
+        for i, (metric, value) in enumerate(overall_metrics.items()):
+            with metric_cols[i]:
+                if metric == 'mape':
+                    st.metric("MAPE", f"{value:.2f}%")
+                elif metric == 'rmse':
+                    st.metric("RMSE", f"{value:.2f}")
+                elif metric == 'r2':
+                    st.metric("R²", f"{value:.4f}")
+                elif metric == 'bias':
+                    st.metric("Bias", f"{value:.2f}%")
+    
+    # Display accuracy trends
+    if len(calibration_history) > 1:
+        st.subheader("Accuracy Trends")
+        
+        # Extract metrics over time
+        history_data = []
+        for calibration in calibration_history:
+            if 'metrics' in calibration and 'overall' in calibration['metrics']:
+                history_row = {
+                    'Calibration ID': calibration.get('calibration_id', 0),
+                    'Date': calibration.get('date', '')
+                }
+                
+                # Add metrics
+                for metric, value in calibration['metrics']['overall'].items():
+                    if metric == 'mape':
+                        history_row['MAPE (%)'] = value
+                    elif metric == 'rmse':
+                        history_row['RMSE'] = value
+                    elif metric == 'r2':
+                        history_row['R²'] = value
+                    elif metric == 'bias':
+                        history_row['Bias (%)'] = value
+                
+                history_data.append(history_row)
+        
+        if history_data:
+            # Create DataFrame
+            history_df = pd.DataFrame(history_data)
+            
+            # Plot metrics over time
+            if 'MAPE (%)' in history_df.columns:
+                fig = px.line(
+                    history_df,
+                    x='Calibration ID',
+                    y='MAPE (%)',
+                    title="MAPE Trend Over Calibrations",
+                    markers=True
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Plot R² trend
+            if 'R²' in history_df.columns:
+                fig = px.line(
+                    history_df,
+                    x='Calibration ID',
+                    y='R²',
+                    title="R² Trend Over Calibrations",
+                    markers=True
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # Display country performance
+    st.subheader("Country Performance Analysis")
+    
+    # Check if we have country performance data
+    if hasattr(market_analyzer.auto_calibrator, 'country_performance') and market_analyzer.auto_calibrator.country_performance:
+        country_performance = market_analyzer.auto_calibrator.country_performance
+        
+        if country_performance:
+            # Create DataFrame for country performance
+            country_data = []
+            for country_id, data in country_performance.items():
+                if 'history' in data and data['history']:
+                    # Calculate average metrics across history
+                    mapes = [h.get('mape', 0) for h in data['history'] if 'mape' in h]
+                    rmses = [h.get('rmse', 0) for h in data['history'] if 'rmse' in h]
+                    r2s = [h.get('r2', 0) for h in data['history'] if 'r2' in h]
+                    biases = [h.get('bias', 0) for h in data['history'] if 'bias' in h]
+                    
+                    avg_mape = np.mean(mapes) if mapes else 0
+                    avg_rmse = np.mean(rmses) if rmses else 0
+                    avg_r2 = np.mean(r2s) if r2s else 0
+                    avg_bias = np.mean(biases) if biases else 0
+                    
+                    country_data.append({
+                        'Country': data.get('name', 'Unknown'),
+                        'Avg MAPE (%)': avg_mape,
+                        'Avg RMSE': avg_rmse,
+                        'Avg R²': avg_r2,
+                        'Avg Bias (%)': avg_bias
+                    })
+            
+            # Create DataFrame
+            if country_data:
+                country_df = pd.DataFrame(country_data)
+                
+                # Sort by MAPE
+                country_df = country_df.sort_values(by='Avg MAPE (%)', ascending=False)
+                
+                # Plot top 10 countries with highest error
+                top_countries = country_df.head(10)
+                
+                fig = px.bar(
+                    top_countries,
+                    y='Country',
+                    x='Avg MAPE (%)',
+                    orientation='h',
+                    title="Top 10 Countries with Highest Forecast Error",
+                    labels={'Avg MAPE (%)': 'Average MAPE (%)'},
+                    color='Avg MAPE (%)',
+                    color_continuous_scale='Reds'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Plot bias distribution
+                fig = px.scatter(
+                    country_df,
+                    x='Avg MAPE (%)',
+                    y='Avg Bias (%)',
+                    color='Avg MAPE (%)',
+                    hover_name='Country',
+                    title="Forecast Error vs. Bias",
+                    labels={
+                        'Avg MAPE (%)': 'Average MAPE (%)',
+                        'Avg Bias (%)': 'Average Bias (%)'
+                    },
+                    color_continuous_scale='Viridis'
+                )
+                
+                # Add zero line for bias
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No country performance data available.")
+    else:
+        st.info("No country performance data available.")
+    
+    # Display component weights
+    st.subheader("Component Performance")
+    
+    # Check if we have component performance data
+    if hasattr(market_analyzer.auto_calibrator, 'component_performance') and market_analyzer.auto_calibrator.component_performance:
+        component_performance = market_analyzer.auto_calibrator.component_performance
+        
+        if component_performance:
+            # Extract component weights
+            component_weights_data = []
+            for component, data in component_performance.items():
+                component_weights_data.append({
+                    'Component': component.replace('_', ' ').title(),
+                    'Weight': data['weight']
+                })
+            
+            # Create DataFrame and sort by weight
+            weights_df = pd.DataFrame(component_weights_data)
+            weights_df = weights_df.sort_values(by='Weight', ascending=False)
+            
+            # Plot using Plotly
+            fig = px.bar(
+                weights_df,
+                y='Component',
+                x='Weight',
+                orientation='h',
+                title="Component Weights",
+                labels={'Weight': 'Relative Weight'},
+                color='Weight',
+                color_continuous_scale='Blues'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No component performance data available.")
+    else:
+        st.info("No component performance data available.")
+    
+    # Call to action
+    st.markdown("---")
+    st.markdown("For more detailed analysis and calibration options, go to the Auto-Calibration page.")
+    
+    if st.button("Go to Auto-Calibration", key="go_to_calibration"):
+        st.session_state.active_page = "Auto-Calibration"
+        st.rerun()
+
+
 def render_visualization_interface(config_manager: ConfigurationManager) -> None:
     """
     Render market visualization interface.
@@ -1263,8 +1518,8 @@ def render_visualization_interface(config_manager: ConfigurationManager) -> None
         return
     
     # Create tabs for different visualization types
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "Market Size", "Growth Analysis", "Market Share", "Regional Analysis", "Data Table"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Market Size", "Growth Analysis", "Market Share", "Regional Analysis", "Data Table", "Calibration Metrics"
     ])
     
     # Get distributed market data
@@ -1289,3 +1544,7 @@ def render_visualization_interface(config_manager: ConfigurationManager) -> None
     # Tab 5: Data Table
     with tab5:
         render_data_table(distributed_market, config_manager)
+        
+    # Tab 6: Calibration Metrics
+    with tab6:
+        render_calibration_metrics(distributed_market, config_manager)

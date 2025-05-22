@@ -9,6 +9,44 @@ import os
 import yaml
 import json
 from typing import Dict, List, Any, Optional, Union
+from pathlib import Path
+
+
+class IncludeLoader(yaml.SafeLoader):
+    """Custom YAML loader that supports including external files"""
+    
+    def __init__(self, stream):
+        # Fixed: Add validation for stream.name attribute
+        if hasattr(stream, 'name') and stream.name:
+            self._root = os.path.dirname(stream.name)
+        else:
+            # Fallback to current directory if stream has no name
+            self._root = os.getcwd()
+        super().__init__(stream)
+
+
+def include_yaml_file(loader, node):
+    """Process the !include directive in YAML files"""
+    # Get the path to the included file
+    filename = os.path.join(loader._root, loader.construct_scalar(node))
+    
+    # Check if the file exists
+    if not os.path.exists(filename):
+        # Try with .yaml and .yml extensions
+        for ext in ['.yaml', '.yml']:
+            if os.path.exists(filename + ext):
+                filename += ext
+                break
+        else:  # No matching file found
+            raise FileNotFoundError(f"Included file not found: {filename}")
+    
+    # Load and return the file content
+    with open(filename, 'r', encoding='utf-8') as f:
+        return yaml.load(f, Loader=IncludeLoader)
+
+
+# Register the include constructor
+IncludeLoader.add_constructor('!include', include_yaml_file)
 
 
 class ConfigurationManager:
@@ -51,7 +89,7 @@ class ConfigurationManager:
         try:
             if file_ext in ['.yaml', '.yml']:
                 with open(config_path, 'r', encoding='utf-8') as f:
-                    self.config = yaml.safe_load(f)
+                    self.config = yaml.load(f, Loader=IncludeLoader)
             elif file_ext == '.json':
                 with open(config_path, 'r', encoding='utf-8') as f:
                     self.config = json.load(f)
@@ -180,6 +218,66 @@ class ConfigurationManager:
         output_dir = output_settings.get('save_path', 'data/output/')
         return output_dir
     
+    def get_region_definitions(self) -> Dict[str, List[str]]:
+        """
+        Get region definitions from configuration
+        
+        Returns:
+            Dictionary mapping region names to lists of constituent countries/regions
+        """
+        return self.config.get('regions', {}).get('hierarchy_definition', {})
+    
+    def get_region_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get region metadata from configuration
+        
+        Returns:
+            Dictionary mapping region names to their metadata
+        """
+        return self.config.get('regions', {}).get('region_metadata', {})
+    
+    def set_region_definitions(self, hierarchy_definition: Dict[str, List[str]], 
+                              region_metadata: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+        """
+        Set or update region definitions in configuration
+        
+        Args:
+            hierarchy_definition: Dictionary mapping region names to lists of constituent countries/regions
+            region_metadata: Optional dictionary with region metadata
+        
+        Raises:
+            ValueError: If hierarchy_definition is not properly formatted
+        """
+        # Fixed: Add validation for hierarchy_definition format
+        if not isinstance(hierarchy_definition, dict):
+            raise ValueError("hierarchy_definition must be a dictionary")
+        
+        for region_name, countries in hierarchy_definition.items():
+            if not isinstance(region_name, str):
+                raise ValueError(f"Region name must be a string, got {type(region_name)}")
+            if not isinstance(countries, list):
+                raise ValueError(f"Countries for region '{region_name}' must be a list, got {type(countries)}")
+            if not all(isinstance(country, str) for country in countries):
+                raise ValueError(f"All countries in region '{region_name}' must be strings")
+        
+        # Fixed: Add validation for region_metadata format
+        if region_metadata is not None:
+            if not isinstance(region_metadata, dict):
+                raise ValueError("region_metadata must be a dictionary")
+            for region_name, metadata in region_metadata.items():
+                if not isinstance(region_name, str):
+                    raise ValueError(f"Region name in metadata must be a string, got {type(region_name)}")
+                if not isinstance(metadata, dict):
+                    raise ValueError(f"Metadata for region '{region_name}' must be a dictionary, got {type(metadata)}")
+        
+        if 'regions' not in self.config:
+            self.config['regions'] = {}
+            
+        self.config['regions']['hierarchy_definition'] = hierarchy_definition
+        
+        if region_metadata:
+            self.config['regions']['region_metadata'] = region_metadata
+    
     def get_value(self, key_path: str, default: Any = None) -> Any:
         """
         Get a value from the configuration using dot notation
@@ -295,7 +393,16 @@ def create_default_config() -> Dict[str, Any]:
                     "id_column": "idGeo",
                     "weight": "auto"
                 }
-            ]
+            ],
+            "enable_causal_analysis": True,
+            "apply_causal_adjustments": True,
+            "causal_analysis": {
+                "method": "ensemble",
+                "lags": 1,
+                "alpha": 0.05,
+                "regularization": "elastic_net",
+                "interaction_detection": True
+            }
         },
         "column_mapping": {
             "global_forecast": {
@@ -317,7 +424,7 @@ def create_default_config() -> Dict[str, Any]:
         },
         "market_distribution": {
             "tier_determination": "auto",
-            "redistribution_start_year": null,  # Set to a specific year (e.g., 2020) to only redistribute from that year forward
+            "redistribution_start_year": None,  # Set to a specific year (e.g., 2020) to only redistribute from that year forward
             "manual_tiers": {
                 "tier1": {
                     "description": "Market Leaders",
@@ -336,6 +443,26 @@ def create_default_config() -> Dict[str, Any]:
                     "max_growth_rate": 60,
                     "min_growth_rate": -30,
                     "apply_scaling_by_market_size": True
+                }
+            },
+            "use_gradient_harmonization": True,
+            "harmonization": {
+                "method": "adaptive",
+                "smoothing_strength": 0.5,
+                "preserve_inflection": True,
+                "transition_zone": 2,
+                "global_consistency": True,
+                "regional_consistency": True,
+                "boundary_enforcement": "relaxed",
+                "target_growth_rates": {
+                    "default": 15.0,
+                    "tier1": 12.0,
+                    "tier2": 18.0,
+                    "tier3": 25.0
+                },
+                "inflection_detection": {
+                    "enabled": True,
+                    "sensitivity": 0.6
                 }
             }
         },
@@ -371,8 +498,31 @@ def create_default_config() -> Dict[str, Any]:
                                 "years": 7
                             }
                         ]
+                    },
+                    {
+                        "name": "regional_analysis",
+                        "title": "${market_type} Regional Analysis",
+                        "specific_year": None,
+                        "analysis_years": None
                     }
                 ]
             }
+        },
+        "regions": {
+            "hierarchy_definition": {
+                "APAC": ["Pakistan", "New Zealand", "Bangladesh", "Bhutan", "Brunei Darussalam", "Myanmar", "Cambodia", 
+                       "Vietnam", "Sri Lanka", "Mainland China", "Laos", "Taiwan", "Mongolia", "Timor-Leste", 
+                       "Papua New Guinea", "Fiji", "Thailand", "South Korea", "India", "Australia", "China", 
+                       "Hong Kong", "Indonesia", "Nepal", "Malaysia", "Philippines", "Singapore", "Japan"],
+                "Americas": ["Central America", "South America", "North America", "Caribbean"],
+                "EMEA": ["Europe", "Middle East", "Africa"],
+                "Worldwide": ["APAC", "Americas", "EMEA"]
+            },
+            "region_metadata": {
+                "APAC": {"description": "Asia Pacific region"},
+                "Americas": {"description": "North, Central, and South America"},
+                "EMEA": {"description": "Europe, Middle East, and Africa"},
+                "Worldwide": {"description": "Global total"}
+            }
         }
-    } 
+    }

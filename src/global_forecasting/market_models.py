@@ -109,9 +109,21 @@ class FisherPryForecaster(BaseForecaster):
         Returns:
             Self for method chaining
         """
-        # Validate input data
-        if 'date' not in data.columns or 'value' not in data.columns:
-            raise ValueError("Data must contain 'date' and 'value' columns")
+        # Comprehensive data validation
+        validation_errors = self._validate_input_data(data, ['date', 'value'])
+        if validation_errors:
+            raise ValueError(f"Data validation failed: {'; '.join(validation_errors)}")
+        
+        # Clean data if needed
+        data = self._handle_data_quality_issues(data)
+        
+        # Fisher-Pry specific validation
+        if len(data) < 3:
+            raise ValueError("Fisher-Pry model requires at least 3 data points")
+        
+        # Check for monotonic data (Fisher-Pry expects growth patterns)
+        if not (data['value'].diff().dropna() >= 0).all():
+            logger.warning("Fisher-Pry model expects monotonic (non-decreasing) data for best results")
         
         # Store historical data
         self.history_df = data.copy()

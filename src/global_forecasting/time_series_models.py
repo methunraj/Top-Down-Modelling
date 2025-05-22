@@ -259,7 +259,7 @@ class VARForecaster(BaseForecaster):
                 date = pd.to_datetime(date)
             
             # Calculate periods based on frequency
-            if (date - last_date).days <= 366:
+            if self._calculate_date_difference_days(last_date, date) <= 366:
                 # Within a year, use monthly frequency
                 periods.append((date.year - last_date.year) * 12 + (date.month - last_date.month))
             else:
@@ -298,7 +298,7 @@ class VARForecaster(BaseForecaster):
             for i, period in enumerate(periods):
                 if period <= 0:
                     # Use actual value for historical dates
-                    closest_date = min(self.history['date'], key=lambda x: abs((x - dates[i]).days))
+                    closest_date = min(self.history['date'], key=lambda x: abs(self._calculate_date_difference_days(x, dates[i])))
                     predictions[i] = self.history.loc[self.history['date'] == closest_date, 'value'].iloc[0]
                 else:
                     # Use forecast value for future dates
@@ -537,8 +537,15 @@ class TemporalFusionTransformerForecaster(BaseForecaster):
         
         # Create and fit a simple exponential smoothing model as fallback
         self.mock_model = ExponentialSmoothingForecaster(self.config)
-        self.mock_model.fit(data)
-        self.fitted = True
+        try:
+            self.mock_model.fit(data)
+            self.fitted = True
+            self.is_mock = True
+            logger.info("TFT fallback model fitted successfully")
+        except Exception as e:
+            logger.error(f"Failed to fit TFT fallback model: {e}")
+            self.fitted = False
+            self.is_mock = False
         
     def forecast(self, periods: int, frequency: str = 'Y') -> pd.DataFrame:
         """
@@ -576,11 +583,11 @@ class TemporalFusionTransformerForecaster(BaseForecaster):
         
         try:
             # Check if we're using the mock model (fallback)
-            if hasattr(self, 'mock_model'):
+            if hasattr(self, 'is_mock') and self.is_mock and hasattr(self, 'mock_model'):
                 mock_forecast = self.mock_model.forecast(periods, frequency)
                 self.forecast_result = mock_forecast
                 self.forecast_dates = forecast_dates
-                self.confidence_intervals = self.mock_model.confidence_intervals
+                self.confidence_intervals = getattr(self.mock_model, 'confidence_intervals', None)
                 return mock_forecast
             
             # Real TFT prediction
@@ -689,7 +696,7 @@ class TemporalFusionTransformerForecaster(BaseForecaster):
             else:
                 # For future dates, calculate the period offset
                 # This is a simplification - in reality you'd want to respect the frequency
-                delta = (date - last_date).days
+                delta = self._calculate_date_difference_days(last_date, date)
                 if delta <= 31:  # Roughly a month
                     periods.append(delta // 7 + 1)  # Weekly approximation
                 elif delta <= 366:  # Roughly a year
@@ -705,7 +712,7 @@ class TemporalFusionTransformerForecaster(BaseForecaster):
             # All dates are in the past, use historical values
             predictions = np.zeros(len(dates))
             for i, date in enumerate(dates):
-                closest_date = min(self.history['date'], key=lambda x: abs((x - date).days))
+                closest_date = min(self.history['date'], key=lambda x: abs(self._calculate_date_difference_days(x, date)))
                 predictions[i] = self.history.loc[self.history['date'] == closest_date, 'value'].iloc[0]
             return predictions
         
@@ -718,7 +725,7 @@ class TemporalFusionTransformerForecaster(BaseForecaster):
         for i, period in zip(date_indices, periods):
             if period == 0:
                 # Historical date
-                closest_date = min(self.history['date'], key=lambda x: abs((x - dates[i]).days))
+                closest_date = min(self.history['date'], key=lambda x: abs(self._calculate_date_difference_days(x, dates[i])))
                 predictions[i] = self.history.loc[self.history['date'] == closest_date, 'value'].iloc[0]
             else:
                 # Future date - get the corresponding forecast
@@ -834,7 +841,7 @@ class DeepARForecaster(BaseForecaster):
         
         try:
             # Determine frequency
-            date_diffs = [(data['date'].iloc[i+1] - data['date'].iloc[i]).days 
+            date_diffs = [self._calculate_date_difference_days(data['date'].iloc[i], data['date'].iloc[i+1]) 
                         for i in range(len(data)-1)]
             avg_diff = sum(date_diffs) / len(date_diffs) if date_diffs else 30
             
@@ -916,8 +923,15 @@ class DeepARForecaster(BaseForecaster):
         
         # Create and fit a SARIMA model as fallback
         self.mock_model = SARIMAForecaster(self.config)
-        self.mock_model.fit(data)
-        self.fitted = True
+        try:
+            self.mock_model.fit(data)
+            self.fitted = True
+            self.is_mock = True
+            logger.info("DeepAR fallback model fitted successfully")
+        except Exception as e:
+            logger.error(f"Failed to fit DeepAR fallback model: {e}")
+            self.fitted = False
+            self.is_mock = False
         
     def forecast(self, periods: int, frequency: str = 'Y') -> pd.DataFrame:
         """
@@ -955,11 +969,11 @@ class DeepARForecaster(BaseForecaster):
         
         try:
             # Check if we're using the mock model (fallback)
-            if hasattr(self, 'mock_model'):
+            if hasattr(self, 'is_mock') and self.is_mock and hasattr(self, 'mock_model'):
                 mock_forecast = self.mock_model.forecast(periods, frequency)
                 self.forecast_result = mock_forecast
                 self.forecast_dates = forecast_dates
-                self.confidence_intervals = self.mock_model.confidence_intervals
+                self.confidence_intervals = getattr(self.mock_model, 'confidence_intervals', None)
                 return mock_forecast
             
             # Real DeepAR prediction
@@ -1084,7 +1098,7 @@ class DeepARForecaster(BaseForecaster):
             else:
                 # For future dates, calculate the period offset
                 # This is a simplification - in reality you'd want to respect the frequency
-                delta = (date - last_date).days
+                delta = self._calculate_date_difference_days(last_date, date)
                 if delta <= 31:  # Roughly a month
                     periods.append(delta // 7 + 1)  # Weekly approximation
                 elif delta <= 366:  # Roughly a year
@@ -1100,7 +1114,7 @@ class DeepARForecaster(BaseForecaster):
             # All dates are in the past, use historical values
             predictions = np.zeros(len(dates))
             for i, date in enumerate(dates):
-                closest_date = min(self.history['date'], key=lambda x: abs((x - date).days))
+                closest_date = min(self.history['date'], key=lambda x: abs(self._calculate_date_difference_days(x, date)))
                 predictions[i] = self.history.loc[self.history['date'] == closest_date, 'value'].iloc[0]
             return predictions
         
@@ -1113,7 +1127,7 @@ class DeepARForecaster(BaseForecaster):
         for i, period in zip(date_indices, periods):
             if period == 0:
                 # Historical date
-                closest_date = min(self.history['date'], key=lambda x: abs((x - dates[i]).days))
+                closest_date = min(self.history['date'], key=lambda x: abs(self._calculate_date_difference_days(x, dates[i])))
                 predictions[i] = self.history.loc[self.history['date'] == closest_date, 'value'].iloc[0]
             else:
                 # Future date - get the corresponding forecast

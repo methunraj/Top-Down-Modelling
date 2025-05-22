@@ -121,12 +121,32 @@ class CAGRForecaster(BaseForecaster):
         if years < 0.1:  # Less than ~36 days
             raise ValueError("Time period too short to calculate meaningful CAGR")
         
-        # Calculate CAGR
-        if start_value > 0:
-            self.cagr = (((end_value / start_value) ** (1 / years)) - 1) * 100
+        # Calculate CAGR with improved error handling
+        if start_value > 0 and end_value > 0:
+            try:
+                self.cagr = (((end_value / start_value) ** (1 / years)) - 1) * 100
+                
+                # Validate CAGR is reasonable (between -50% and +200% annually)
+                if not (-50 <= self.cagr <= 200):
+                    logger.warning(f"Calculated CAGR {self.cagr:.2f}% seems unrealistic, capping at reasonable bounds")
+                    self.cagr = max(-50, min(200, self.cagr))
+                    
+            except (OverflowError, ZeroDivisionError, ValueError) as e:
+                logger.warning(f"Error calculating CAGR: {str(e)}, defaulting to 0%")
+                self.cagr = 0
         else:
-            logger.warning("Starting value is zero or negative, cannot calculate CAGR")
-            self.cagr = 0
+            logger.warning(f"Invalid start value ({start_value}) or end value ({end_value}) for CAGR calculation")
+            # Try to use median growth rate from available data if possible
+            if len(period_data) > 2:
+                period_data_sorted = period_data.sort_values('date')
+                period_data_sorted['growth'] = period_data_sorted['value'].pct_change()
+                median_growth = period_data_sorted['growth'].median()
+                if not np.isnan(median_growth) and -0.5 <= median_growth <= 2.0:
+                    self.cagr = median_growth * 100
+                else:
+                    self.cagr = 0
+            else:
+                self.cagr = 0
         
         logger.info(f"Calculated CAGR: {self.cagr:.2f}%")
         self.fitted = True
@@ -653,16 +673,33 @@ class ARIMAForecaster(BaseForecaster):
         else:
             raise ValueError(f"Unsupported frequency: {frequency}")
         
-        # Generate forecast
+        # Generate forecast with confidence intervals
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            forecast_result = self.fitted_model.forecast(steps=periods)
+            try:
+                # Try new API (statsmodels >= 0.12)
+                forecast_result = self.fitted_model.get_forecast(steps=periods)
+                forecast_values = forecast_result.predicted_mean
+                forecast_errors = forecast_result.se_mean
+            except AttributeError:
+                try:
+                    # Try older API with forecast method
+                    forecast_values = self.fitted_model.forecast(steps=periods)
+                    # Try to get forecast variance
+                    if hasattr(self.fitted_model, 'forecast_variance'):
+                        forecast_errors = np.sqrt(self.fitted_model.forecast_variance(periods))
+                    else:
+                        # Fallback: estimate errors from residuals
+                        residuals = self.fitted_model.resid
+                        forecast_errors = np.full(periods, np.std(residuals))
+                except Exception:
+                    # Final fallback: simple forecast without confidence intervals
+                    forecast_values = self.fitted_model.forecast(steps=periods)
+                    # Use residual standard deviation as error estimate
+                    residuals = getattr(self.fitted_model, 'resid', np.array([0]))
+                    forecast_errors = np.full(periods, np.std(residuals) if len(residuals) > 0 else 1.0)
         
-        # Get standard errors for confidence intervals
-        forecast_errors = np.sqrt(self.fitted_model.forecast_variance(periods))
-        
-        # Create point forecast
-        forecast_values = forecast_result
+        # forecast_values is already set above in the try/except blocks
         
         # Apply minimum value if configured
         if self.ensure_minimum:
@@ -715,6 +752,12 @@ class ARIMAForecaster(BaseForecaster):
         
         for date in dates:
             if isinstance(date, str):
+                date = pd.to_datetime(date)
+            elif hasattr(date, 'to_pydatetime'):
+                # pandas Timestamp
+                pass
+            else:
+                # numpy.datetime64 or other types
                 date = pd.to_datetime(date)
             
             # Calculate periods based on frequency
@@ -939,9 +982,15 @@ class SARIMAForecaster(BaseForecaster):
         
         # Set seasonal period based on data frequency
         dates = data['date'].values
+        avg_diff = 365  # Default to annual
+        
         if len(dates) >= 3:
             # Try to infer frequency from dates
-            date_diffs = [(dates[i+1] - dates[i]).days for i in range(len(dates)-1)]
+            date_diffs = []
+            for i in range(len(dates)-1):
+                days = self._calculate_date_difference_days(dates[i], dates[i+1])
+                date_diffs.append(days)
+            
             avg_diff = sum(date_diffs) / len(date_diffs)
             
             if avg_diff < 45:  # Monthly data
@@ -949,13 +998,21 @@ class SARIMAForecaster(BaseForecaster):
             elif avg_diff < 100:  # Quarterly data
                 self.s = 4
             elif avg_diff > 300:  # Annual data
-                self.s = 1  # No seasonality for annual data
+                # For annual data, disable seasonal components by setting s to a safe value
+                # and forcing non-seasonal model
+                self.s = 4  # Set to valid value but will be overridden below
+                self.P = 0
+                self.D = 0
+                self.Q = 0
         
-        # Check if enough data for seasonal modeling
-        if len(values) < 2 * self.s:
-            logger.warning(f"Not enough data points ({len(values)}) for seasonal modeling with s={self.s}")
-            logger.warning("Setting seasonal order to (0,0,0,0) - equivalent to ARIMA")
-            self.seasonal_order = (0, 0, 0, 0)
+        # Check if enough data for seasonal modeling or if seasonal components are disabled
+        if len(values) < 2 * self.s or (self.P == 0 and self.D == 0 and self.Q == 0):
+            if avg_diff > 300:  # Annual data case
+                logger.info("Annual data detected - using ARIMA instead of SARIMA")
+            else:
+                logger.warning(f"Not enough data points ({len(values)}) for seasonal modeling with s={self.s}")
+            logger.info("Setting seasonal order to (0,0,0,4) - equivalent to ARIMA")
+            self.seasonal_order = (0, 0, 0, 4)  # Use valid s value but no seasonal components
             self.auto_order = True  # Force auto determination of ARIMA parameters
         
         # Determine SARIMA order
@@ -1041,8 +1098,22 @@ class SARIMAForecaster(BaseForecaster):
             
             # Get confidence intervals
             conf_int = forecast_result.conf_int(alpha=0.05)
-            lower_bound = conf_int.iloc[:, 0].values
-            upper_bound = conf_int.iloc[:, 1].values
+            
+            # Handle different types of confidence interval results
+            if hasattr(conf_int, 'iloc'):
+                # DataFrame result
+                lower_bound = conf_int.iloc[:, 0].values
+                upper_bound = conf_int.iloc[:, 1].values
+            else:
+                # numpy array result
+                if conf_int.ndim == 2 and conf_int.shape[1] >= 2:
+                    lower_bound = conf_int[:, 0]
+                    upper_bound = conf_int[:, 1]
+                else:
+                    # Fallback: estimate confidence intervals from forecast variance
+                    forecast_std = forecast_result.se_mean if hasattr(forecast_result, 'se_mean') else np.full(periods, np.std(forecast_values) * 0.1)
+                    lower_bound = forecast_values - 1.96 * forecast_std
+                    upper_bound = forecast_values + 1.96 * forecast_std
         
         # Apply minimum value if configured
         if self.ensure_minimum:
@@ -1089,6 +1160,12 @@ class SARIMAForecaster(BaseForecaster):
         
         for date in dates:
             if isinstance(date, str):
+                date = pd.to_datetime(date)
+            elif hasattr(date, 'to_pydatetime'):
+                # pandas Timestamp
+                pass
+            else:
+                # numpy.datetime64 or other types
                 date = pd.to_datetime(date)
             
             # Calculate periods based on frequency
@@ -1194,8 +1271,14 @@ class RegressionForecaster(BaseForecaster):
         """
         features = pd.DataFrame()
         
-        # Convert dates to datetime if they're strings
+        # Convert dates to pandas datetime for consistent attribute access
         if isinstance(dates[0], str):
+            dates = pd.to_datetime(dates)
+        elif hasattr(dates[0], 'to_pydatetime'):
+            # pandas Timestamp
+            pass
+        else:
+            # numpy.datetime64 or other types
             dates = pd.to_datetime(dates)
         
         # Basic time features

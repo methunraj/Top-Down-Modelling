@@ -3095,9 +3095,28 @@ def render_distribution_interface(market_distributor=None, config_manager=None) 
     st.header("Market Distribution Configuration")
     
     # Check if we have necessary components
-    if market_distributor is None or config_manager is None:
-        st.warning("Market distributor or configuration manager not initialized.")
+    if config_manager is None:
+        st.warning("Configuration manager not initialized.")
         return {}
+        
+    # Try to create a market distributor if one wasn't provided
+    if market_distributor is None:
+        try:
+            from src.data_processing.data_loader import DataLoader
+            from src.indicators.indicator_analyzer import IndicatorAnalyzer
+            
+            # Initialize data loader
+            data_loader = DataLoader(config_manager)
+            
+            # Initialize indicator analyzer
+            indicator_analyzer = IndicatorAnalyzer(config_manager, data_loader)
+            
+            # Create market distributor
+            market_distributor = MarketDistributor(config_manager, data_loader, indicator_analyzer)
+            st.success("Created a new market distributor.")
+        except Exception as e:
+            st.error(f"Error creating market distributor: {str(e)}")
+            return {}
     
     # Initialize settings dictionary
     distribution_settings = {}
@@ -3140,9 +3159,42 @@ def render_distribution_interface(market_distributor=None, config_manager=None) 
     if st.button("Apply Distribution Settings"):
         # Update market distributor settings
         try:
-            # Apply the settings
-            market_distributor.update_settings(distribution_settings)
-            st.success("Distribution settings updated successfully!")
+            # First try to update settings using the update_settings method
+            if hasattr(market_distributor, 'update_settings'):
+                # Call the update_settings method
+                market_distributor.update_settings(distribution_settings)
+                
+                # Success message
+                st.success("Distribution settings updated successfully!")
+            # Fallback to direct attribute updates if the method doesn't exist
+            elif hasattr(market_distributor, 'distribution_settings'):
+                # Log a warning about using fallback method
+                logger.warning("Using fallback method to update settings - update_settings method not found")
+                
+                # Update settings
+                market_distributor.distribution_settings.update(distribution_settings)
+                
+                # Reset tiers if tier settings changed
+                if any(key in distribution_settings for key in ['tier_determination', 'manual_tiers', 'kmeans_params']):
+                    if hasattr(market_distributor, 'tiers'):
+                        market_distributor.tiers = None
+                    if hasattr(market_distributor, 'tier_thresholds'):
+                        market_distributor.tier_thresholds = None
+                
+                # Update gradient harmonizer settings if available
+                if 'smoothing' in distribution_settings and hasattr(market_distributor, 'gradient_harmonizer'):
+                    harmonizer = market_distributor.gradient_harmonizer
+                    if hasattr(harmonizer, 'update_settings'):
+                        harmonizer.update_settings(distribution_settings.get('smoothing', {}))
+                    elif hasattr(harmonizer, 'settings'):
+                        # Update settings for gradient harmonizer
+                        for key, value in distribution_settings.get('smoothing', {}).items():
+                            harmonizer.settings[key] = value
+                            
+                # Success message
+                st.success("Distribution settings updated successfully!")
+            else:
+                st.warning("Market distributor does not have a distribution_settings attribute")
             
             # Update the session state
             if 'market_distributor' in st.session_state:
@@ -3150,15 +3202,88 @@ def render_distribution_interface(market_distributor=None, config_manager=None) 
                 
             # Save to configuration if desired
             if st.checkbox("Save to configuration file", value=False):
-                config_dict = config_manager.config_dict
-                config_dict['distribution_settings'] = distribution_settings
-                config_manager.update_config(config_dict)
-                
-                # Save the file if path exists
-                if hasattr(config_manager, 'config_path') and config_manager.config_path:
-                    config_manager.save_config(config_manager.config_path)
-                    st.success(f"Settings saved to {config_manager.config_path}")
+                # Update configuration directly
+                if hasattr(config_manager, 'config'):
+                    # Update market_distribution settings
+                    if 'market_distribution' not in config_manager.config:
+                        config_manager.config['market_distribution'] = {}
+                    
+                    # Update each setting section
+                    for key, value in distribution_settings.items():
+                        config_manager.config['market_distribution'][key] = value
+                    
+                    # Save the file if path exists
+                    if hasattr(config_manager, 'config_path') and config_manager.config_path:
+                        config_manager.save_config(config_manager.config_path)
+                        st.success(f"Settings saved to {config_manager.config_path}")
+                else:
+                    st.error("Configuration manager is not properly initialized")
         except Exception as e:
             st.error(f"Error updating settings: {str(e)}")
+    
+    # Run Market Distribution button
+    st.header("Run Market Distribution")
+    st.markdown("""
+    Click the button below to run the market distribution process using the current settings.
+    This will distribute the global market forecast across countries and generate market projections.
+    """)
+    
+    # Check if required data is available
+    data_ready = True
+    error_msg = ""
+    
+    if 'global_forecast' not in st.session_state or st.session_state.global_forecast is None:
+        data_ready = False
+        error_msg += "Global forecast data is missing. "
+        
+    if 'country_historical' not in st.session_state or st.session_state.country_historical is None:
+        data_ready = False
+        error_msg += "Country historical data is missing. "
+    
+    if not data_ready:
+        st.warning(f"Cannot run distribution: {error_msg}")
+        if st.button("Go to Data Input"):
+            st.session_state.active_page = "Data Input"
+            st.rerun()
+    else:
+        # Run distribution button
+        if st.button("Run Market Distribution", key="run_distribution_btn"):
+            try:
+                with st.spinner("Running market distribution..."):
+                    # Call the distribute_market method
+                    if market_distributor is not None:
+                        # Run the distribution
+                        distributed_market = market_distributor.distribute_market()
+                        
+                        # Store result in session state
+                        st.session_state.distributed_market = distributed_market
+                        
+                        # Display summary
+                        st.success("Market distribution completed successfully!")
+                        
+                        # Show distribution summary
+                        if distributed_market is not None:
+                            total_countries = distributed_market['Country'].nunique() if 'Country' in distributed_market.columns else 0
+                            years = sorted(distributed_market['Year'].unique()) if 'Year' in distributed_market.columns else []
+                            first_year = min(years) if years else "N/A"
+                            last_year = max(years) if years else "N/A"
+                            
+                            # Display summary
+                            st.subheader("Distribution Summary")
+                            st.markdown(f"""
+                            - **Total Countries/Regions**: {total_countries}
+                            - **Forecast Period**: {first_year} - {last_year}
+                            - **Total Years**: {len(years)}
+                            """)
+                            
+                            # Option to view visualization
+                            if st.button("View Visualization"):
+                                st.session_state.active_page = "Visualization"
+                                st.rerun()
+                    else:
+                        st.error("Market distributor is not initialized. Cannot run distribution.")
+            except Exception as e:
+                st.error(f"Error running market distribution: {str(e)}")
+                logger.exception("Error in market distribution")
     
     return distribution_settings

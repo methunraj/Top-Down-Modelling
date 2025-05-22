@@ -54,6 +54,248 @@ class BaseForecaster(ABC):
         """
         pass
     
+    def _validate_input_data(self, data: pd.DataFrame, required_columns: List[str] = None) -> List[str]:
+        """
+        Comprehensive validation of input data for forecasting.
+        
+        Args:
+            data: DataFrame to validate
+            required_columns: List of required column names
+            
+        Returns:
+            List of validation error messages (empty if valid)
+        """
+        errors = []
+        
+        # Basic structure validation
+        if data is None:
+            errors.append("Input data cannot be None")
+            return errors
+            
+        if data.empty:
+            errors.append("Input data cannot be empty")
+            return errors
+        
+        # Required columns validation
+        if required_columns is None:
+            required_columns = ['date', 'value']
+            
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            errors.append(f"Missing required columns: {missing_columns}")
+            return errors
+        
+        # Data quality validation
+        if 'value' in data.columns:
+            # Check for numeric values
+            if not pd.api.types.is_numeric_dtype(data['value']):
+                errors.append("Value column must contain numeric data")
+            
+            # Check for negative values
+            if (data['value'] < 0).any():
+                errors.append("Value column contains negative values")
+            
+            # Check for NaN/infinity
+            if data['value'].isna().any():
+                errors.append("Value column contains NaN values")
+                
+            if np.isinf(data['value']).any():
+                errors.append("Value column contains infinity values")
+            
+            # Check for zero variance
+            if data['value'].var() == 0:
+                errors.append("Value column has zero variance (all values are identical)")
+        
+        # Date column validation
+        if 'date' in data.columns:
+            try:
+                pd.to_datetime(data['date'])
+            except (ValueError, TypeError):
+                errors.append("Date column contains invalid date formats")
+        
+        # Temporal consistency validation
+        if 'date' in data.columns and len(data) > 1:
+            dates = pd.to_datetime(data['date']).sort_values()
+            date_diffs = dates.diff().dropna()
+            
+            # Check for duplicate dates
+            if dates.duplicated().any():
+                errors.append("Date column contains duplicate values")
+            
+            # Check for reasonable time intervals (not too large gaps)
+            max_gap = date_diffs.max()
+            median_gap = date_diffs.median()
+            if max_gap > median_gap * 5:  # Allow up to 5x median gap
+                errors.append(f"Irregular time intervals detected (max gap: {max_gap}, median: {median_gap})")
+        
+        # Data sufficiency validation
+        min_data_points = getattr(self, 'min_data_points', 3)
+        if len(data) < min_data_points:
+            errors.append(f"Insufficient data points: {len(data)} < {min_data_points} required")
+        
+        return errors
+    
+    def _validate_forecast_parameters(self, periods: int, frequency: str = 'Y') -> List[str]:
+        """
+        Validate forecasting parameters.
+        
+        Args:
+            periods: Number of periods to forecast
+            frequency: Time frequency
+            
+        Returns:
+            List of validation error messages
+        """
+        errors = []
+        
+        # Periods validation
+        if not isinstance(periods, int):
+            errors.append("Periods must be an integer")
+        elif periods <= 0:
+            errors.append("Periods must be positive")
+        elif periods > 100:  # Reasonable upper limit
+            errors.append("Periods exceeds reasonable limit (100)")
+        
+        # Frequency validation
+        valid_frequencies = ['Y', 'Q', 'M', 'W', 'D']
+        if frequency not in valid_frequencies:
+            errors.append(f"Invalid frequency '{frequency}'. Must be one of: {valid_frequencies}")
+        
+        return errors
+    
+    def _handle_data_quality_issues(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Handle common data quality issues with appropriate warnings.
+        
+        Args:
+            data: Input DataFrame
+            
+        Returns:
+            Cleaned DataFrame
+        """
+        cleaned_data = data.copy()
+        
+        # Handle missing values
+        if 'value' in cleaned_data.columns and cleaned_data['value'].isna().any():
+            missing_count = cleaned_data['value'].isna().sum()
+            logger.warning(f"Found {missing_count} missing values, using forward fill")
+            cleaned_data['value'] = cleaned_data['value'].fillna(method='ffill')
+            
+            # If still missing (at the beginning), use backward fill
+            if cleaned_data['value'].isna().any():
+                cleaned_data['value'] = cleaned_data['value'].fillna(method='bfill')
+        
+        # Handle outliers (values beyond 3 standard deviations)
+        if 'value' in cleaned_data.columns:
+            mean_val = cleaned_data['value'].mean()
+            std_val = cleaned_data['value'].std()
+            outlier_threshold = 3 * std_val
+            
+            outliers = np.abs(cleaned_data['value'] - mean_val) > outlier_threshold
+            if outliers.any():
+                outlier_count = outliers.sum()
+                logger.warning(f"Found {outlier_count} outliers, capping at 3 standard deviations")
+                
+                # Cap outliers at 3 standard deviations
+                upper_bound = mean_val + outlier_threshold
+                lower_bound = mean_val - outlier_threshold
+                cleaned_data.loc[outliers, 'value'] = np.clip(
+                    cleaned_data.loc[outliers, 'value'], 
+                    lower_bound, 
+                    upper_bound
+                )
+        
+        return cleaned_data
+    
+    def _create_fallback_model(self, fallback_type: str = 'simple_linear'):
+        """
+        Create a simple fallback model when advanced models fail.
+        
+        Args:
+            fallback_type: Type of fallback model to create
+        """
+        if fallback_type == 'simple_linear':
+            from sklearn.linear_model import LinearRegression
+            self.fallback_model = LinearRegression()
+            self.is_fallback = True
+            logger.warning(f"{self.name} using simple linear regression fallback")
+        elif fallback_type == 'mean':
+            self.fallback_model = None  # Will use mean prediction
+            self.is_fallback = True
+            self.fallback_mean = None
+            logger.warning(f"{self.name} using mean value fallback")
+        else:
+            raise ValueError(f"Unknown fallback type: {fallback_type}")
+    
+    def _fit_fallback_model(self, data: pd.DataFrame) -> None:
+        """
+        Fit the fallback model to data.
+        
+        Args:
+            data: Training data
+        """
+        if not hasattr(self, 'is_fallback') or not self.is_fallback:
+            return
+        
+        if hasattr(self, 'fallback_model') and self.fallback_model is not None:
+            # Linear regression fallback
+            if 'date' in data.columns:
+                # Use ordinal dates for linear regression
+                dates = pd.to_datetime(data['date'])
+                X = dates.astype(int).values.reshape(-1, 1)
+                y = data['value'].values
+                self.fallback_model.fit(X, y)
+        else:
+            # Mean fallback
+            self.fallback_mean = data['value'].mean()
+        
+        self.fitted = True
+    
+    def _forecast_fallback(self, periods: int, frequency: str = 'Y') -> pd.DataFrame:
+        """
+        Generate forecast using fallback model.
+        
+        Args:
+            periods: Number of periods to forecast
+            frequency: Time frequency
+            
+        Returns:
+            DataFrame with forecasted values
+        """
+        if not hasattr(self, 'is_fallback') or not self.is_fallback:
+            raise ValueError("No fallback model available")
+        
+        # Generate future dates
+        last_date = getattr(self, 'last_training_date', pd.Timestamp.now())
+        if frequency == 'Y':
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(years=1), 
+                                       periods=periods, freq='YS')
+        elif frequency == 'Q':
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(months=3), 
+                                       periods=periods, freq='QS')
+        elif frequency == 'M':
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(months=1), 
+                                       periods=periods, freq='MS')
+        else:
+            # Default to yearly
+            future_dates = pd.date_range(start=last_date + pd.DateOffset(years=1), 
+                                       periods=periods, freq='YS')
+        
+        if hasattr(self, 'fallback_model') and self.fallback_model is not None:
+            # Linear regression prediction
+            X_future = future_dates.astype(int).values.reshape(-1, 1)
+            predictions = self.fallback_model.predict(X_future)
+        else:
+            # Mean prediction
+            predictions = np.full(periods, self.fallback_mean)
+        
+        return pd.DataFrame({
+            'date': future_dates,
+            'value': predictions,
+            'model': self.name,
+            'is_fallback': True
+        })
+    
     @abstractmethod
     def fit(self, data: pd.DataFrame) -> 'BaseForecaster':
         """
@@ -142,6 +384,41 @@ class BaseForecaster(ABC):
             'RMSE': rmse,
             'Theil_U': theil_u
         }
+    
+    @staticmethod
+    def _calculate_date_difference_days(date1, date2):
+        """
+        Calculate difference between two dates in days, handling different date types.
+        
+        Args:
+            date1: First date (pandas Timestamp, numpy datetime64, etc.)
+            date2: Second date (pandas Timestamp, numpy datetime64, etc.)
+            
+        Returns:
+            Number of days between dates as float
+        """
+        try:
+            diff = date2 - date1
+            
+            # Handle different date difference types
+            if hasattr(diff, 'days'):
+                # pandas Timedelta
+                return float(diff.days)
+            elif isinstance(diff, np.timedelta64):
+                # numpy timedelta64
+                return float(diff / np.timedelta64(1, 'D'))
+            else:
+                # Convert to pandas Timestamp and calculate difference
+                try:
+                    ts1 = pd.Timestamp(date1)
+                    ts2 = pd.Timestamp(date2)
+                    return float((ts2 - ts1).days)
+                except:
+                    # Fallback: assume 1 day difference
+                    return 1.0
+        except Exception:
+            # Final fallback
+            return 1.0
     
     def _predict_for_dates(self, dates: np.ndarray) -> np.ndarray:
         """

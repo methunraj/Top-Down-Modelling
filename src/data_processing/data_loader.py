@@ -276,9 +276,15 @@ class DataLoader:
         Returns:
             True if wide format, False if long format
         """
-        # Check if required columns exist
-        if id_col not in df.columns or country_col not in df.columns:
-            raise ValueError(f"Required columns {id_col} or {country_col} not found")
+        # Check if required columns exist - Fixed error message logic
+        missing_cols = []
+        if id_col not in df.columns:
+            missing_cols.append(id_col)
+        if country_col not in df.columns:
+            missing_cols.append(country_col)
+        
+        if missing_cols:
+            raise ValueError(f"Required columns not found: {', '.join(missing_cols)}")
         
         # If 'Year' and 'Value' columns exist, it's likely long format
         if 'Year' in df.columns and 'Value' in df.columns:
@@ -312,7 +318,19 @@ class DataLoader:
             
         Returns:
             DataFrame in long format with 'Year' and 'Value' columns
+        
+        Raises:
+            ValueError: If DataFrame is empty or has no valid year columns
         """
+        # Enhanced: Add comprehensive DataFrame validation with fallback
+        if df.empty:
+            logger.warning("Empty DataFrame provided for wide-to-long conversion, returning empty result")
+            # Return empty DataFrame with expected structure instead of raising error
+            return pd.DataFrame(columns=['Year', 'Value'])
+        
+        if len(df.columns) == 0:
+            logger.warning("DataFrame has no columns to process, returning empty result")
+            return pd.DataFrame(columns=['Year', 'Value'])
         # Identify year columns
         year_columns = []
         for col in df.columns:
@@ -324,7 +342,13 @@ class DataLoader:
                 continue
         
         if not year_columns:
-            raise ValueError("No year columns found in data")
+            logger.warning("No year columns found in data, checking if data is already in long format")
+            # Check if data might already be in long format
+            if 'Year' in df.columns and 'Value' in df.columns:
+                logger.info("Data appears to already be in long format, returning as-is")
+                return df[['Year', 'Value'] + [col for col in [id_col, country_col, vertical_col] if col and col in df.columns]]
+            else:
+                raise ValueError("No year columns found in data and not in expected long format")
         
         # Determine non-year columns to keep
         id_vars = [id_col, country_col]
