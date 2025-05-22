@@ -24,7 +24,7 @@ data_sources:
     path: data/indicators/gdp.xlsx
     sheet_name: Sheet1
     id_column: idGeo
-    country_column: Country
+    country_column: nameGeo
     format: wide
     weight: auto
     type: value
@@ -32,7 +32,7 @@ data_sources:
     path: data/indicators/tech_adoption.xlsx
     sheet_name: Sheet1
     id_column: idGeo
-    country_column: Country
+    country_column: nameGeo
     format: wide
     weight: auto
     type: rank
