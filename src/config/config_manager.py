@@ -376,7 +376,7 @@ def create_default_config() -> Dict[str, Any]:
                 "path": "data/input/Country_Historical_data.xlsx",
                 "identifier": {
                     "id_column": "idGeo",
-                    "name_column": "Country",
+                    "name_column": "nameGeo",
                     "market_column": "nameVertical"
                 }
             },
@@ -412,12 +412,12 @@ def create_default_config() -> Dict[str, Any]:
             },
             "country_historical": {
                 "id_column": "idGeo",
-                "country_column": "Country",
+                "country_column": "nameGeo",
                 "vertical_column": "nameVertical"
             },
             "indicators": {
                 "id_column": "idGeo",
-                "country_column": "Country",
+                "country_column": "nameGeo",
                 "year_column": "Year",
                 "value_column": "Value"
             }

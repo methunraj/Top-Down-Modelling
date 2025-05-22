@@ -43,11 +43,11 @@ column_mapping:
     type_column: Type
   country_historical:
     id_column: idGeo
-    country_column: Country
+    country_column: nameGeo
     vertical_column: nameVertical
   indicators:
     id_column: idGeo
-    country_column: Country
+    country_column: nameGeo
 market_distribution:
   tier_determination: auto
   kmeans_params:

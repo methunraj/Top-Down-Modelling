@@ -63,12 +63,12 @@ column_mapping:
   
   country_historical:
     id_column: "idGeo"                          # Column name for country IDs
-    country_column: "Country"                   # Column name for country names
+    country_column: "nameGeo"                   # Column name for country names
     vertical_column: "nameVertical"             # Column name for market names
   
   indicators:
     id_column: "idGeo"                          # Column name for country IDs in indicators
-    country_column: "Country"                   # Column name for country names in indicators
+    country_column: "nameGeo"                   # Column name for country names in indicators
 
 ################################################################################
 # MARKET DISTRIBUTION SETTINGS

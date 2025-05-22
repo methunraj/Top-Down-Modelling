@@ -232,7 +232,7 @@ class MarketAnalyzer:
                     # Get column names from mapping
                     country_mapping = self.config_manager.get_column_mapping('country_historical')
                     id_col = country_mapping.get('id_column', 'idGeo')
-                    name_col = country_mapping.get('name_column', 'Country')
+                    name_col = country_mapping.get('country_column', 'nameGeo')
                     
                     # Determine value column
                     value_column = None
@@ -297,6 +297,10 @@ class MarketAnalyzer:
             # Fixed: Get value column name from configuration
             value_column = self.config_manager.get_column_mapping('global_forecast').get('value_column', 'Value')
             
+            # Get country column mapping
+            country_mapping = self.config_manager.get_column_mapping('country_historical')
+            name_col = country_mapping.get('country_column', 'nameGeo')
+            
             # Validate that the value column exists
             if value_column not in df.columns:
                 logger.warning(f"Value column '{value_column}' not found in data, using 'Value' as fallback")
@@ -330,7 +334,7 @@ class MarketAnalyzer:
             country_stats = []
             for _, row in top_countries.iterrows():
                 country_id = row['idGeo']
-                country_name = row['Country']
+                country_name = row[name_col] if name_col in row else row.get('nameGeo', 'Unknown')
                 
                 # Get first year value for this country - Fixed to use dynamic column name
                 first_value = df[(df['Year'] == first_year) & (df['idGeo'] == country_id)][value_column].values
@@ -472,7 +476,7 @@ class MarketAnalyzer:
         # Get column names from mapping
         country_mapping = self.config_manager.get_column_mapping('country_historical')
         id_col = country_mapping.get('id_column', 'idGeo')
-        name_col = country_mapping.get('name_column', 'Country')
+        name_col = country_mapping.get('country_column', 'nameGeo')
         
         # Determine value column
         value_column = None
