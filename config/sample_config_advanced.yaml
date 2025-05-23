@@ -1,0 +1,286 @@
+################################################################################
+# Universal Market Forecasting Framework - Advanced Configuration File
+################################################################################
+
+# Project information
+project:
+  name: "Sample Market Estimator"  # Name of your project
+  version: "1.0"                  # Version of the framework
+  market_type: "Sample Market"     # Type of market being analyzed
+  description: "Advanced sample configuration with all available options"
+
+################################################################################
+# DATA SOURCES
+################################################################################
+data_sources:
+  # Global market forecast data
+  global_forecast:
+    path: "path/to/your/global_forecast.xlsx"   # Path to your global market forecast Excel file
+    sheet_name: "Sheet1"                        # Name of the sheet containing the data
+    identifier:
+      value_column: "Value"                     # Column name containing market values
+      year_column: "Year"                       # Column name containing years
+      type_column: "Type"                       # Column name containing market type
+
+  # Country historical data
+  country_historical:
+    path: "path/to/your/country_data.xlsx"      # Path to your country historical data Excel file
+    sheet_name: "Sheet1"                        # Name of the sheet containing the data
+    format: "wide"                              # Data format: "wide" or "long"
+    identifier:
+      id_column: "idGeo"                        # Column name containing country IDs
+      name_column: "Country"                    # Column name containing country names
+      market_column: "nameVertical"             # Column name containing market names
+
+  # Indicators
+  indicators:
+    # Example of a regular value-based indicator
+    - name: "gdp"                               # Name of the indicator
+      path: "path/to/your/gdp_data.xlsx"       # Path to indicator data file
+      sheet_name: "Sheet1"                      # Name of the sheet containing the data
+      id_column: "idGeo"                        # Column name containing country IDs
+      country_column: "Country"                 # Column name containing country names
+      format: "wide"                            # Data format: "wide" or "long"
+      weight: "auto"                            # Weight calculation method: "auto" or specific value (e.g., 0.5)
+      type: "value"                             # (Optional) Type of indicator: "value" (default) or "rank"
+
+    # Example of a rank-based indicator
+    - name: "market_rank"
+      path: "path/to/your/rank_data.xlsx"
+      sheet_name: "Sheet1"
+      id_column: "idGeo"
+      country_column: "Country"
+      format: "wide"
+      weight: "auto"
+      type: "rank"                              # Specify this for rank-based indicators
+
+    # Example of an indicator with fixed weight
+    - name: "fixed_weight_indicator"
+      path: "path/to/your/indicator_data.xlsx"
+      sheet_name: "Sheet1"
+      id_column: "idGeo"
+      country_column: "Country"
+      format: "wide"
+      weight: 0.25                              # Fixed weight (0-1) rather than auto-calculated
+      type: "value"                             # (Optional) Type of indicator
+
+################################################################################
+# COLUMN MAPPINGS
+################################################################################
+column_mapping:
+  global_forecast:
+    year_column: "Year"                         # Column name for years in global forecast
+    value_column: "Value"                       # Column name for values in global forecast
+    type_column: "Type"                         # Column name for types in global forecast
+  
+  country_historical:
+    id_column: "idGeo"                          # Column name for country IDs
+    country_column: "Country"                   # Column name for country names
+    vertical_column: "nameVertical"             # Column name for market names
+  
+  indicators:
+    id_column: "idGeo"                          # Column name for country IDs in indicators
+    country_column: "Country"                   # Column name for country names in indicators
+
+################################################################################
+# MARKET DISTRIBUTION SETTINGS
+################################################################################
+market_distribution:
+  # Tier determination for classifying countries
+  tier_determination: "auto"                    # Method: "auto" (K-means clustering) or "manual"
+  
+  # For manual tier configuration (used if tier_determination is "manual")
+  manual_tiers:
+    tier_1:
+      share_threshold: 5.0                      # Countries with >= 5% share
+      description: "Market Leaders"             # Description of tier
+    tier_2:
+      share_threshold: 1.0                      # Countries with >= 1% and < 5% share
+      description: "Established Markets"
+    tier_3:
+      share_threshold: 0.1                      # Countries with >= 0.1% and < 1% share
+      description: "Emerging Markets"
+  
+  # K-means clustering parameters (used if tier_determination is "auto")
+  kmeans_params:
+    min_clusters: 3                             # Minimum number of clusters (tiers)
+    max_clusters: 8                             # Maximum number of clusters (tiers)
+    random_state: 42                            # Random seed for reproducibility
+    n_init: 10                                  # Number of times K-means is run with different seeds
+  
+  # Growth constraints settings
+  growth_constraints:
+    determination_method: "auto"                # Method: "auto" (data-driven) or "manual"
+    
+    # Manual growth constraints (used if determination_method is "manual")
+    manual_constraints:
+      max_growth_rate: 60                       # Maximum allowed year-over-year growth rate (%)
+      min_growth_rate: -30                      # Minimum allowed year-over-year growth rate (%)
+      apply_scaling_by_market_size: true        # Whether to scale constraints by market size
+  
+  # Smoothing algorithm parameters
+  smoothing:
+    enabled: true                               # Whether to apply smoothing to growth trajectories
+    
+    # Tier-specific smoothing parameters
+    tier_smoothing:
+      tier_1:                                   # Parameters for top tier (market leaders)
+        window: 3                               # Rolling average window
+        min_periods: 1                          # Minimum periods for rolling calculations
+        max_growth: 35                          # Maximum growth after smoothing (%)
+        min_growth: -15                         # Minimum growth after smoothing (%)
+        target_growth: 15                       # Long-term target growth rate (%)
+      
+      tier_2:                                   # Parameters for middle tier (established markets)
+        window: 3
+        min_periods: 1
+        max_growth: 40
+        min_growth: -20
+        target_growth: 20
+      
+      tier_3:                                   # Parameters for bottom tier (emerging markets)
+        window: 5
+        min_periods: 1
+        max_growth: 45
+        min_growth: -25
+        target_growth: 25
+    
+    convergence_rate: 0.25                      # How quickly growth rates converge to target values
+
+################################################################################
+# WEIGHT CALCULATION PARAMETERS
+################################################################################
+weight_params:
+  # Transformation method for correlations
+  transformation: "log"                          # Options: "log", "squared", "sigmoid"
+  
+  # Log transformation parameters (used if transformation is "log")
+  log_base: 2.0                                 # Base for logarithmic transformation
+  log_scale: 1.0                                # Scaling factor for logarithmic transformation
+  
+  # Sigmoid transformation parameters (used if transformation is "sigmoid")
+  sigmoid_steepness: 5.0                        # Steepness parameter for sigmoid transformation
+  
+  # Significance adjustment method
+  significance_method: "continuous"             # Options: "continuous" or "stepped"
+  
+  # Enable visualization of weight comparisons
+  visualize_weights: true                       # Whether to generate weight comparison charts
+  
+  # Filter settings for indicators
+  filtering:
+    min_correlation: 0.1                        # Minimum correlation to consider (absolute value)
+    max_p_value: 0.1                            # Maximum p-value to consider significant
+    min_coverage: 0.3                           # Minimum data coverage ratio required
+
+################################################################################
+# OUTPUT SETTINGS
+################################################################################
+output:
+  save_path: "path/to/output/directory"         # Directory where output files will be saved
+  formats: ["xlsx", "csv", "json"]              # Output file formats to generate
+  
+  visualizations:
+    enabled: true                               # Enable visualization generation
+    save_format: "png"                          # Image format: "png", "jpg", "svg", "pdf"
+    dpi: 300                                    # Resolution for raster formats
+    custom_style: "seaborn-whitegrid"           # Matplotlib style (optional)
+    
+    types:
+      # Market Size Visualization
+      - name: market_size
+        title: "${market_type} Market Size by Country"  # Title template with variable
+        top_n_countries: 10                             # Number of top countries to show
+        specific_years: [2023, 2025, 2030]              # Specific years to visualize
+        show_cagr: true                                 # Show CAGR on the chart
+        stacked: false                                  # Whether to use stacked bar chart
+      
+      # Growth Rate Analysis
+      - name: growth_rates
+        title: "${market_type} Growth Rate Analysis"
+        top_n_countries: 10
+        show_yoy: true                                  # Show year-over-year growth
+        show_cagr: true                                 # Show CAGR
+        highlight_outliers: true                        # Highlight unusual growth patterns
+      
+      # CAGR Analysis
+      - name: cagr_analysis
+        title: "${market_type} CAGR Analysis"
+        periods:
+          - name: "Short-term"
+            years: 3                                    # Period length in years
+          - name: "Mid-term" 
+            years: 5
+          - name: "Long-term"
+            years: 7
+      
+      # Market Share Analysis
+      - name: market_share
+        title: "${market_type} Market Share Analysis"
+        top_n_countries: 10
+        show_regional: true                            # Show regional breakdown
+        specific_years: [2023, 2030]                   # Specific years for analysis
+      
+      # Regional Analysis
+      - name: regional_analysis
+        title: "${market_type} Regional Analysis"
+        specific_year: 2023                           # Base year for analysis
+        analysis_years: [2023, 2024, 2025]           # Years to analyze
+        regions:
+          - name: "North America"                    # Region name
+            countries: ["United States", "Canada"]   # Countries in the region
+          - name: "Europe"
+            countries: ["Germany", "France", "UK", "Italy", "Spain"]
+          - name: "Asia Pacific"
+            countries: ["China", "Japan", "India", "South Korea", "Australia"]
+          - name: "Latin America"
+            countries: ["Brazil", "Mexico", "Argentina", "Colombia", "Chile"]
+          - name: "Middle East & Africa"
+            countries: ["Saudi Arabia", "UAE", "South Africa", "Turkey", "Egypt"]
+      
+      # Top Countries Analysis
+      - name: top_countries
+        title: "${market_type} Top Countries Analysis"
+        top_n_countries: 10
+        year: 2025                                   # Year to analyze
+        specific_countries: ["United States", "China", "Japan", "Germany", "UK"]  # Optional specific countries
+      
+      # Forecast Comparison
+      - name: forecast_comparison
+        title: "${market_type} Market Forecast Comparison"
+        years: [2020, 2025, 2031]                 # Years to compare in forecast
+        include_historical: true                  # Include historical data for comparison
+        confidence_interval: 0.9                  # Show confidence interval (0-1)
+
+################################################################################
+# ADVANCED ANALYSIS SETTINGS
+################################################################################
+advanced:
+  # Sensitivity analysis
+  sensitivity_analysis:
+    enabled: false                              # Whether to run sensitivity analysis
+    variables:                                  # Variables to analyze sensitivity for
+      - name: "global_market_size"
+        range: [-10, 10]                        # Percent range to vary
+        steps: 5                                # Number of steps within range
+      - name: "growth_rate"
+        range: [-5, 5]
+        steps: 3
+  
+  # Outlier detection and handling
+  outlier_detection:
+    enabled: true                               # Whether to detect outliers
+    method: "iqr"                               # Method: "iqr", "z_score", or "isolation_forest"
+    threshold: 1.5                              # Threshold for outlier detection
+    action: "cap"                               # Action: "cap", "remove", or "flag"
+  
+  # Custom extension hooks
+  extensions:
+    pre_analysis: "path/to/custom_script.py"    # Script to run before analysis
+    post_processing: "path/to/custom_script.py" # Script to run after processing
+    
+  # Parallelization settings for large datasets
+  parallel_processing:
+    enabled: false                              # Whether to use parallel processing
+    n_jobs: -1                                  # Number of jobs (-1 for all processors)
+    backend: "multiprocessing"                  # Backend: "multiprocessing" or "threading" 
