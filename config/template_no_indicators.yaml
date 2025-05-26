@@ -1,0 +1,91 @@
+################################################################################
+# Universal Market Forecasting Framework - No Indicators Template
+# 
+# This template shows how to configure the framework WITHOUT any indicators.
+# The framework will work perfectly using only historical market data patterns.
+################################################################################
+
+# Project information
+project:
+  name: "Basic Market Forecast"        # Your project name
+  version: "1.0"                       # Version
+  market_type: "Your Market Type"      # e.g., Healthcare, Energy, Finance, etc.
+  description: "Market forecast without external indicators"
+
+################################################################################
+# DATA SOURCES (REQUIRED)
+################################################################################
+data_sources:
+  # Global market forecast data (REQUIRED)
+  global_forecast:
+    path: "data/global_forecast.xlsx"   # Path to your global forecast file
+    sheet_name: "Sheet1"                # Excel sheet name
+    identifier:
+      value_column: "Value"             # Column with market values
+      year_column: "Year"               # Column with years
+      type_column: "Type"               # Column indicating Historical/Forecast
+
+  # Country historical data (REQUIRED)
+  country_historical:
+    path: "data/country_data.xlsx"      # Path to your country data file
+    sheet_name: "Sheet1"                # Excel sheet name
+    format: "wide"                      # "wide" or "long" format
+    identifier:
+      id_column: "idGeo"                # Country ID column
+      name_column: "Country"            # Country name column
+      market_column: "nameVertical"     # Market type column
+
+  # Indicators (OPTIONAL - Framework works without any indicators)
+  indicators: []                        # Empty list = no indicators used
+
+################################################################################
+# MARKET DISTRIBUTION SETTINGS
+################################################################################
+market_distribution:
+  tier_determination: "auto"            # Automatic tier classification based on market share
+  
+  growth_constraints:
+    determination_method: "auto"        # Automatic growth constraint calculation
+    
+  smoothing:
+    enabled: true                       # Enable smoothing for realistic growth patterns
+
+################################################################################
+# OUTPUT SETTINGS
+################################################################################
+output:
+  save_path: "data/output/"             # Output directory
+  formats: ["xlsx", "csv"]              # Export formats
+  
+  visualizations:
+    enabled: true                       # Generate charts and visualizations
+    types:
+      - name: "market_size"
+        title: "${market_type} Market Size by Country"
+        top_n_countries: 10
+      
+      - name: "growth_rates"
+        title: "${market_type} Growth Rate Analysis"
+        top_n_countries: 10
+        show_yoy: true
+        show_cagr: true
+      
+      - name: "market_share"
+        title: "${market_type} Market Share Analysis"
+        top_n_countries: 10
+
+################################################################################
+# NOTES
+################################################################################
+# 
+# This configuration demonstrates that the Universal Market Forecasting Framework
+# works perfectly without any external indicators. The system will:
+#
+# 1. Use historical market patterns for country classification
+# 2. Apply data-driven growth constraints
+# 3. Generate accurate forecasts based on market structure
+# 4. Provide comprehensive visualizations and analysis
+#
+# You can always add indicators later by modifying the 'indicators' section.
+#
+################################################################################
