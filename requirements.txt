@@ -1,0 +1,90 @@
+# Core data science dependencies
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+scipy
+openpyxl
+xlsxwriter
+pyyaml
+
+# Streamlit and interactive visualization
+streamlit
+plotly
+kaleido
+altair
+bokeh
+pydeck
+
+# Statistical forecasting
+statsmodels
+pmdarima
+tbats
+prophet
+
+# Machine learning forecasting
+xgboost
+lightgbm
+tensorflow
+scikit-optimize
+
+# Deep learning and neural networks
+torch
+pytorch-forecasting
+
+# Time series utilities
+tsfresh
+sktime
+dtw-python
+
+# Probabilistic and Bayesian forecasting
+tensorflow-probability
+cmdstanpy
+scikeras
+
+# Enhanced Monte Carlo requirements
+hmmlearn
+sobol_seq
+
+# Advanced time series models
+gluonts
+mxnet
+
+# Enhanced data processing
+polars
+pyarrow
+dask
+
+# Geospatial visualization
+geopandas
+geopy
+
+# Reporting and export
+reportlab
+python-pptx
+jinja2
+markdown
+
+# Development and testing
+pytest
+black
+isort
+flake8
+
+# Additional utilities for market modeling
+requests
+urllib3
+lxml
+beautifulsoup4
+openpyxl
+xlrd
+
+# Mathematical and optimization libraries
+cvxpy
+pulp
+networkx
+
+# Visualization enhancements
+wordcloud
+folium
