@@ -1,0 +1,154 @@
+################################################################################
+# Universal Market Forecasting Framework - Custom Indicators Template
+# 
+# This template shows how to configure custom indicators relevant to YOUR market.
+# Examples are provided for different market types.
+################################################################################
+
+# Project information
+project:
+  name: "Custom Market Forecast"       # Your project name
+  version: "1.0"                       # Version
+  market_type: "Your Market Type"      # e.g., Healthcare, Energy, Finance, etc.
+  description: "Market forecast with custom indicators"
+
+################################################################################
+# DATA SOURCES
+################################################################################
+data_sources:
+  # Global market forecast data (REQUIRED)
+  global_forecast:
+    path: "data/global_forecast.xlsx"
+    sheet_name: "Sheet1"
+    identifier:
+      value_column: "Value"
+      year_column: "Year"
+      type_column: "Type"
+
+  # Country historical data (REQUIRED)
+  country_historical:
+    path: "data/country_data.xlsx"
+    sheet_name: "Sheet1"
+    format: "wide"
+    identifier:
+      id_column: "idGeo"
+      name_column: "Country"
+      market_column: "nameVertical"
+
+  # Custom Indicators (Configure based on YOUR market)
+  indicators:
+    # Example 1: Value-based indicator
+    - name: "market_potential_index"     # Choose name relevant to your market
+      path: "data/indicators/market_potential.xlsx"
+      sheet_name: "Sheet1"
+      id_column: "idGeo"
+      country_column: "Country"
+      format: "wide"                     # Years as columns
+      weight: "auto"                     # Let system calculate optimal weight
+      type: "value"                      # Numerical values
+
+    # Example 2: Rank-based indicator  
+    - name: "regulatory_readiness"       # Choose name relevant to your market
+      path: "data/indicators/regulations.xlsx"
+      sheet_name: "Sheet1"
+      id_column: "idGeo"
+      country_column: "Country"
+      format: "wide"
+      weight: 0.3                        # Manual weight (0.0 to 1.0)
+      type: "rank"                       # Ranking data (1 = best)
+
+    # Example 3: Another value indicator with manual weight
+    - name: "infrastructure_quality"
+      path: "data/indicators/infrastructure.xlsx"
+      sheet_name: "Sheet1"
+      id_column: "idGeo"
+      country_column: "Country"
+      format: "long"                     # Year, Value columns
+      weight: 0.4                        # Manual weight
+      type: "value"
+
+################################################################################
+# MARKET-SPECIFIC INDICATOR EXAMPLES
+################################################################################
+#
+# HEALTHCARE MARKET:
+# - hospital_density, aging_population, healthcare_spending_per_capita
+# - medical_infrastructure, physician_ratio, health_outcomes_index
+#
+# ENERGY MARKET:
+# - renewable_capacity, grid_infrastructure, energy_security_index
+# - carbon_pricing, environmental_regulations, resource_availability
+#
+# FINANCIAL MARKET:
+# - banking_penetration, financial_inclusion, regulatory_environment
+# - digital_payment_adoption, credit_market_depth, fintech_readiness
+#
+# TECHNOLOGY MARKET:
+# - digital_readiness, innovation_index, tech_talent_availability
+# - internet_penetration, startup_ecosystem, r_and_d_spending
+#
+# CONSUMER MARKET:
+# - disposable_income, urbanization_rate, consumer_confidence
+# - retail_infrastructure, brand_loyalty, purchasing_power
+#
+################################################################################
+
+################################################################################
+# MARKET DISTRIBUTION SETTINGS
+################################################################################
+market_distribution:
+  tier_determination: "auto"
+  
+  growth_constraints:
+    determination_method: "auto"
+    
+  smoothing:
+    enabled: true
+
+################################################################################
+# OUTPUT SETTINGS
+################################################################################
+output:
+  save_path: "data/output/"
+  formats: ["xlsx", "csv"]
+  
+  visualizations:
+    enabled: true
+    types:
+      - name: "market_size"
+        title: "${market_type} Market Size by Country"
+        top_n_countries: 10
+      
+      - name: "growth_rates"
+        title: "${market_type} Growth Rate Analysis"
+        top_n_countries: 10
+        show_yoy: true
+        show_cagr: true
+      
+      - name: "market_share"
+        title: "${market_type} Market Share Analysis"
+        top_n_countries: 10
+
+################################################################################
+# INDICATOR CONFIGURATION GUIDE
+################################################################################
+#
+# INDICATOR TYPES:
+# - "value": Numerical data (GDP, spending, population, etc.)
+# - "rank": Ranking data where 1 = best, higher numbers = worse
+#
+# WEIGHT OPTIONS:
+# - "auto": System calculates optimal weight based on correlation
+# - 0.0 to 1.0: Manual weight (higher = more influence)
+#
+# DATA FORMATS:
+# - "wide": Years as columns (Year1, Year2, Year3, ...)
+# - "long": Separate Year and Value columns
+#
+# BEST PRACTICES:
+# - Use 2-5 indicators for best results
+# - Choose indicators that logically influence your market
+# - Mix value and rank indicators when possible
+# - Start with "auto" weights, then fine-tune manually if needed
+#
+################################################################################
